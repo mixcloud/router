@@ -15,7 +15,6 @@ import { SafeFragment } from './SafeFragment'
 import {
   RouterStateFrame,
   useFrameRootBoundary,
-  useRouterFrame,
   useRouterStateOwner,
   useRouterStateSelector,
 } from './routerStateContext'
@@ -56,9 +55,9 @@ declare module '@tanstack/router-core' {
  */
 export function Matches() {
   const router = useRouter()
-  const committedFrame = useRouterFrame()
+  const routerStateOwner = useRouterStateOwner()
   const [renderFrame, setRenderFrame] = React.useState<RouterRenderFrame>()
-  const activeFrame = renderFrame ?? committedFrame
+  const activeFrame = renderFrame ?? routerStateOwner?.frame
   const rootRoute: AnyRoute = router.routesById[rootRouteId]
 
   const pendingElement = renderPending(router, rootRoute)
@@ -88,7 +87,7 @@ export function Matches() {
       )}
       <ResolvedSuspense fallback={pendingElement}>
         {activeFrame ? (
-          <RouterStateFrame frame={activeFrame}>
+          <RouterStateFrame>
             <MatchesInner
               activeFrame={activeFrame}
               renderFrame={renderFrame}
