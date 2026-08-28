@@ -10,7 +10,9 @@ import {
 import * as React from 'react'
 import {
   Link,
+  Matches,
   Outlet,
+  RouterContextProvider,
   RouterProvider,
   createRootRoute,
   createRoute,
@@ -240,5 +242,96 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
     )
     expect(screen.queryByRole('heading', { name: 'First Title' })).toBeNull()
     expect(router.state.location.pathname).toBe('/second')
+  })
+})
+
+describe('concurrent render frames', () => {
+  /**
+   * A reader mounted outside the route tree by an unrelated urgent update must
+   * agree with what is on screen. This is the failure that motivates the whole
+   * design: a menu, toast, or modal opened while a route is suspending would
+   * otherwise render against a route the user cannot see.
+   */
+  test('a reader outside the route tree does not read ahead of the visible route', async () => {
+    let releaseNext: () => void = () => {}
+    let nextReady = false
+    const nextGate = new Promise<void>((resolve) => {
+      releaseNext = () => {
+        nextReady = true
+        resolve()
+      }
+    })
+
+    function NextPage() {
+      if (!nextReady) {
+        throw nextGate
+      }
+      return <h1>Next Title</h1>
+    }
+
+    function PresentedPath() {
+      const pathname = useRouterState({ select: (s) => s.location.pathname })
+      return <div data-testid="presented">{pathname}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => <Outlet />,
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      component: NextPage,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    function TestApp() {
+      const [show, setShow] = React.useState(false)
+      return (
+        <RouterContextProvider router={router}>
+          <button type="button" onClick={() => setShow(true)}>
+            Show presented path
+          </button>
+          {show ? <PresentedPath /> : null}
+          <Matches />
+        </RouterContextProvider>
+      )
+    }
+
+    render(<TestApp />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // The imperative head advances while the route it names suspends.
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/next' })
+    })
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/next'),
+    )
+    expect(screen.getByRole('heading', { name: 'Index Title' })).toBeVisible()
+
+    // An urgent update, unrelated to routing, mounts a reader.
+    fireEvent.click(screen.getByRole('button', { name: 'Show presented path' }))
+
+    expect(screen.getByTestId('presented').textContent).toBe('/')
+
+    await act(async () => {
+      releaseNext()
+      await nextGate
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('presented').textContent).toBe('/next'),
+    )
   })
 })
