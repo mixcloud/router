@@ -12,9 +12,9 @@ import { Transitioner, settleOwner } from './Transitioner'
 import { matchContext } from './matchContext'
 import { Match, renderPending } from './Match'
 import { SafeFragment } from './SafeFragment'
-import { useHydrated } from './ClientOnly'
 import {
   RouterStateFrame,
+  useFrameRootBoundary,
   useRouterFrame,
   useRouterStateOwner,
   useRouterStateSelector,
@@ -64,16 +64,12 @@ export function Matches() {
   const pendingElement = renderPending(router, rootRoute)
 
   const _isServer = isServer ?? router.isServer
-  const isHydrating = Boolean(router.ssr) && !useHydrated()
   // SSR and hydration keep upstream's route-level boundaries for streaming
   // and an identical hydration tree. Afterwards, the frame path consolidates
   // suspension at this root so one complete frame is acknowledged atomically.
-  const useFrameRootBoundary =
-    router.options.experimental_concurrentRenderFrames &&
-    !_isServer &&
-    !isHydrating
+  const frameRootBoundary = useFrameRootBoundary(router, _isServer)
   const ResolvedSuspense =
-    _isServer || (router.ssr && !useFrameRootBoundary)
+    _isServer || (router.ssr && !frameRootBoundary)
       ? SafeFragment
       : React.Suspense
 
@@ -161,6 +157,7 @@ function MatchesInner({
     activeFrame,
     matches,
     renderFrame,
+    router.options.experimental_concurrentRenderFrames,
     routerStateOwner,
     setRenderFrame,
   ])

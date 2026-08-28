@@ -4,6 +4,7 @@ import * as React from 'react'
 import { useStore } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useLayoutEffect } from './utils'
+import { useHydrated } from './ClientOnly'
 import type { AnyRouter, RouterState } from '@tanstack/router-core'
 
 export type RouterRenderFrame = RouterState<any>
@@ -207,4 +208,25 @@ export function useRouterStateSelector<TSelected>(
   }, [owner])
 
   return selection.current
+}
+
+/**
+ * Whether this render should consolidate route suspension at the frame root.
+ *
+ * Only the frame path asks, so `useHydrated` is never subscribed to on the
+ * default path. Within the frame branch the hook is unconditional, and the
+ * branch itself depends only on the option, which is fixed when the router is
+ * created.
+ */
+export function useFrameRootBoundary(
+  router: AnyRouter,
+  isServerRender: boolean,
+): boolean {
+  if (!router.options.experimental_concurrentRenderFrames) {
+    return false
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const hydrated = useHydrated()
+  const isHydrating = Boolean(router.ssr) && !hydrated
+  return !isServerRender && !isHydrating
 }
