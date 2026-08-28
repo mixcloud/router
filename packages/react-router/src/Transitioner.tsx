@@ -43,8 +43,10 @@ export function Transitioner({
       React.startTransition(() => {
         routerStateOwner?.begin()
         try {
-          const headFrame = fn()
-          const frame = routerStateOwner?.stage(headFrame)
+          fn()
+          // Read the aggregate state after the batched writes, so the staged
+          // frame is exactly what this publication assembled.
+          const frame = routerStateOwner?.stage(router.stores.__store.get())
           if (frame) {
             acknowledgement[0 /* offered */] = frame.frameId
             setRenderFrame(frame)

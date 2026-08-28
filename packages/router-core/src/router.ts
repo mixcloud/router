@@ -770,7 +770,7 @@ export type CommitLocationFn = ({
 }: ParsedLocation & CommitLocationOptions) => Promise<void>
 
 export type StartTransitionFn = (
-  fn: () => RouterState<any>,
+  fn: () => void,
   expected: Array<AnyRouteMatch>,
 ) => Promise<boolean>
 
