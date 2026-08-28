@@ -1506,7 +1506,10 @@ function offerPending(router: CoordinatorRouter, tx: LoadTransaction): void {
     }))
     offered[index]!.status = 'pending'
     const ack = (session[4 /* ack */] = router
-      .startTransition(() => router.stores.setMatches(offered), offered)
+      .startTransition(() => {
+        router.stores.setMatches(offered)
+        return router.stores.__store.get()
+      }, offered)
       .then((rendered) => {
         if (
           rendered &&
@@ -1842,12 +1845,13 @@ async function runClientTransaction(
       finishPending(router, tx)
       commitMatches(router, tx, matches, resolvedPrefix)
       if (router._tx !== tx) {
-        return
+        return router.stores.__store.get()
       }
       router.emit({ type: 'onLoad', ...changeInfo })
       if (router._tx === tx) {
         router.emit({ type: 'onBeforeRouteMount', ...changeInfo })
       }
+      return router.stores.__store.get()
     }
     const rendered = await router.startTransition(commit, matches)
     if (process.env.NODE_ENV !== 'production' && tx[6 /* refresh */]) {
