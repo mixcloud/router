@@ -3,6 +3,7 @@ import { _getAssetMatches, deepEqual } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { Asset } from './Asset'
 import { useRouter } from './useRouter'
+import { useRouterStateSelector } from './routerStateContext'
 import type { RouterManagedTag } from '@tanstack/router-core'
 
 type ScriptRenderAsset = RouterManagedTag & {
@@ -62,14 +63,20 @@ export const Scripts = () => {
     return scripts
   }
 
-  if (isServer ?? router.isServer) {
-    const activeMatches = router.stores.matches.get()
-    const scripts = getScripts(activeMatches)
-    return renderScripts(router, scripts)
+  let scripts: ReturnType<typeof getScripts>
+  if (router.options.experimental_concurrentRenderFrames) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    scripts = useRouterStateSelector(
+      router,
+      (state) => getScripts(state.matches),
+      deepEqual,
+    )
+  } else if (isServer ?? router.isServer) {
+    scripts = getScripts(router.stores.matches.get())
+  } else {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
+    scripts = useStore(router.stores.matches, getScripts, deepEqual)
   }
-
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  const scripts = useStore(router.stores.matches, getScripts, deepEqual)
 
   return renderScripts(router, scripts)
 }

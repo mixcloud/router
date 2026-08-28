@@ -12,12 +12,20 @@ import { Transitioner, settleOwner } from './Transitioner'
 import { matchContext } from './matchContext'
 import { Match, renderPending } from './Match'
 import { SafeFragment } from './SafeFragment'
+import { useHydrated } from './ClientOnly'
+import {
+  RouterStateFrame,
+  useRouterStateOwner,
+  useRouterStateSelector,
+} from './routerStateContext'
+import type { RouterRenderFrame } from './routerStateContext'
 import type {
   StructuralSharingOption,
   ValidateSelected,
 } from './structuralSharing'
 import type {
   AnyRoute,
+  AnyRouteMatch,
   AnyRouter,
   DeepPartial,
   Expand,
@@ -47,13 +55,26 @@ declare module '@tanstack/router-core' {
  */
 export function Matches() {
   const router = useRouter()
+  const routerStateOwner = useRouterStateOwner()
+  const [renderFrame, setRenderFrame] = React.useState<RouterRenderFrame>()
+  const activeFrame = renderFrame ?? routerStateOwner?.frame
   const rootRoute: AnyRoute = router.routesById[rootRouteId]
 
   const pendingElement = renderPending(router, rootRoute)
 
-  // Do not render a root Suspense during SSR or hydrating from SSR
+  const _isServer = isServer ?? router.isServer
+  const isHydrating = Boolean(router.ssr) && !useHydrated()
+  // SSR and hydration keep upstream's route-level boundaries for streaming
+  // and an identical hydration tree. Afterwards, the frame path consolidates
+  // suspension at this root so one complete frame is acknowledged atomically.
+  const useFrameRootBoundary =
+    router.options.experimental_concurrentRenderFrames &&
+    !_isServer &&
+    !isHydrating
   const ResolvedSuspense =
-    (isServer ?? router.isServer) || router.ssr ? SafeFragment : React.Suspense
+    _isServer || (router.ssr && !useFrameRootBoundary)
+      ? SafeFragment
+      : React.Suspense
 
   const inner = (
     <>
@@ -65,10 +86,21 @@ export function Matches() {
           // router object, so React skips the update.
           // eslint-disable-next-line react-hooks/rules-of-hooks -- server only, condition is static
           t={React.useState<AnyRouter>()[1]}
+          setRenderFrame={setRenderFrame}
         />
       )}
       <ResolvedSuspense fallback={pendingElement}>
-        <MatchesInner />
+        {activeFrame ? (
+          <RouterStateFrame frame={activeFrame}>
+            <MatchesInner
+              activeFrame={activeFrame}
+              renderFrame={renderFrame}
+              setRenderFrame={setRenderFrame}
+            />
+          </RouterStateFrame>
+        ) : (
+          <MatchesInner setRenderFrame={setRenderFrame} />
+        )}
       </ResolvedSuspense>
     </>
   )
@@ -80,25 +112,57 @@ export function Matches() {
   )
 }
 
-function MatchesInner() {
+function MatchesInner({
+  activeFrame,
+  renderFrame,
+  setRenderFrame,
+}: {
+  activeFrame?: RouterRenderFrame
+  renderFrame?: RouterRenderFrame
+  setRenderFrame: React.Dispatch<
+    React.SetStateAction<RouterRenderFrame | undefined>
+  >
+}) {
   const router = useRouter()
+  const routerStateOwner = useRouterStateOwner()
   const acknowledgement = router._rendered!
-  const matches =
-    (isServer ?? router.isServer)
-      ? router.stores.matches.get()
-      : // eslint-disable-next-line react-hooks/rules-of-hooks
-        useStore(
-          router.stores.matches,
-          (value) => acknowledgement[0 /* offered */] ?? value,
-        )
+  let matches: Array<AnyRouteMatch>
+  if (router.options.experimental_concurrentRenderFrames) {
+    // The option is fixed for the mounted router, so this branch cannot change
+    // hook order during the component's lifetime.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    matches = useRouterStateSelector(router, (state) => state.matches)
+  } else if (isServer ?? router.isServer) {
+    matches = router.stores.matches.get()
+  } else {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    matches = useStore(router.stores.matches, (value) =>
+      Array.isArray(acknowledgement[0 /* offered */])
+        ? acknowledgement[0 /* offered */]
+        : value,
+    )
+  }
   const match = matches[0]
   const routeId = match?.routeId
 
   useLayoutEffect(() => {
-    if (acknowledgement[0 /* offered */] === matches) {
+    const acknowledged = router.options.experimental_concurrentRenderFrames
+      ? acknowledgement[0 /* offered */] === activeFrame?.frameId
+      : acknowledgement[0 /* offered */] === matches
+    if (acknowledged) {
+      if (renderFrame && routerStateOwner?.commit(renderFrame)) {
+        setRenderFrame(undefined)
+      }
       settleOwner(acknowledgement, true)
     }
-  }, [acknowledgement, matches])
+  }, [
+    acknowledgement,
+    activeFrame,
+    matches,
+    renderFrame,
+    routerStateOwner,
+    setRenderFrame,
+  ])
 
   const matchComponent = routeId ? <Match routeId={routeId} /> : null
 
@@ -175,6 +239,33 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
         includeSearch,
       })
     }
+  }
+
+  if (router.options.experimental_concurrentRenderFrames) {
+    // The option is fixed for the mounted router, so this branch cannot change
+    // hook order during the component's lifetime.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const state = useRouterStateSelector(router, (frameState) => frameState)
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return React.useCallback(
+      (opts) => {
+        const { pending, caseSensitive, fuzzy, includeSearch, ...rest } = opts
+
+        // Match against the presented frame so a pending imperative location
+        // cannot leak into the committed render.
+        return router.matchRoute(
+          rest as any,
+          {
+            pending,
+            caseSensitive,
+            fuzzy,
+            includeSearch,
+            _state: state,
+          } as any,
+        )
+      },
+      [router, state],
+    )
   }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -266,6 +357,17 @@ export function useMatches<
     StructuralSharingOption<TRouter, TSelected, TStructuralSharing>,
 ): UseMatchesResult<TRouter, TSelected> {
   const router = useRouter<TRouter>()
+
+  if (router.options.experimental_concurrentRenderFrames) {
+    // The option is fixed for the mounted router, so this branch cannot change
+    // hook order during the component's lifetime.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const selectMatches = useStructuralSharing(opts, router)
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return useRouterStateSelector(router, (state) =>
+      selectMatches(state.matches),
+    ) as UseMatchesResult<TRouter, TSelected>
+  }
 
   if (isServer ?? router.isServer) {
     const matches = router.stores.matches.get() as Array<

@@ -14,6 +14,7 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
+import { useRouterStateSelector } from './routerStateContext'
 
 import { useForwardedRef, useIntersectionObserver } from './utils'
 
@@ -458,12 +459,15 @@ export function useLinkProps<
     [stableActiveOptions, disabled, isHydrated, _options, router, to],
   )
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [href, isActive] = useStore(
-    router.stores.location,
-    selectLinkState,
-    compareLinkState,
-  )
+  const [href, isActive] = router.options.experimental_concurrentRenderFrames
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+      useRouterStateSelector(
+        router,
+        (state) => selectLinkState(state.location),
+        compareLinkState,
+      )
+    : // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+      useStore(router.stores.location, selectLinkState, compareLinkState)
   const externalLink = isActive === undefined ? href : undefined
   const linkDisabled = disabled || href === undefined
 

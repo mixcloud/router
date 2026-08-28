@@ -574,6 +574,8 @@ export interface RouterState<
   in out TRouteTree extends AnyRoute = AnyRoute,
   in out TRouteMatch = MakeRouteMatchUnion,
 > {
+  /** Monotonic identity for one atomically assembled render snapshot. */
+  frameId: number
   status: 'pending' | 'idle'
   isLoading: boolean
   matches: Array<TRouteMatch>
@@ -792,7 +794,7 @@ export type CommitLocationFn = ({
 }: ParsedLocation & CommitLocationOptions) => Promise<void>
 
 export type StartTransitionFn = (
-  fn: () => void,
+  fn: () => RouterState<any>,
   expected: Array<AnyRouteMatch>,
 ) => Promise<boolean>
 
@@ -1079,7 +1081,7 @@ export interface RouterCore<
   _serverResult?: ServerLoadResult
   /** Framework publication waiting for an exact render acknowledgement. */
   _rendered?: [
-    offered?: Array<AnyRouteMatch>,
+    offered?: Array<AnyRouteMatch> | number,
     settle?: (rendered: boolean) => void,
   ]
   /** Development-only HMR reload for a route and its descendants. */
@@ -2628,16 +2630,24 @@ export class RouterCore<
     }
     const next = this.buildLocation(matchLocation as any)
 
-    const isPending = this.stores.status.get() === 'pending'
+    const presentedState = (
+      opts as MatchRouteOptions & { _state?: RouterState }
+    )?._state
+    const isPending =
+      (presentedState?.status ?? this.stores.status.get()) === 'pending'
     if (opts?.pending && !isPending) {
       return false
     }
 
     const pending = opts?.pending ?? !isPending
 
-    const baseLocation = pending
-      ? this.latestLocation
-      : this.stores.resolvedLocation.get() || this.stores.location.get()
+    const baseLocation = presentedState
+      ? pending
+        ? presentedState.location
+        : presentedState.resolvedLocation || presentedState.location
+      : pending
+        ? this.latestLocation
+        : this.stores.resolvedLocation.get() || this.stores.location.get()
 
     const match = findSingleMatch(
       next.pathname,
@@ -2767,6 +2777,7 @@ export function getInitialRouterState(
   location: ParsedLocation,
 ): RouterState<any> {
   return {
+    frameId: 0,
     isLoading: false,
     status: 'idle',
     resolvedLocation: undefined,

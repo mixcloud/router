@@ -6,6 +6,7 @@ import { invariant, replaceEqualDeep } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { dummyMatchContext, matchContext } from './matchContext'
 import { useRouter } from './useRouter'
+import { useRouterStateSelector } from './routerStateContext'
 import type {
   StructuralSharingOption,
   ValidateSelected,
@@ -150,36 +151,50 @@ export function useMatch<
   const routeId = opts.from ?? nearestRouteId
   const matchStore = router.stores.getMatchStore(routeId!)
 
-  if (isServer ?? router.isServer) {
-    const match = matchStore.get()
-    if (!match) {
-      if (opts.shouldThrow ?? true) {
-        if (process.env.NODE_ENV !== 'production') {
-          throw new Error(
-            `Invariant failed: Could not find ${opts.from ? `an active match from "${opts.from}"` : 'a nearest match!'}`,
-          )
+  if (!router.options.experimental_concurrentRenderFrames) {
+    if (isServer ?? router.isServer) {
+      const match = matchStore.get()
+      if (!match) {
+        if (opts.shouldThrow ?? true) {
+          if (process.env.NODE_ENV !== 'production') {
+            throw new Error(
+              `Invariant failed: Could not find ${opts.from ? `an active match from "${opts.from}"` : 'a nearest match!'}`,
+            )
+          }
+
+          invariant()
         }
 
-        invariant()
+        return undefined as any
       }
 
-      return undefined as any
+      return (opts.select ? opts.select(match as any) : match) as any
     }
 
-    return (opts.select ? opts.select(match as any) : match) as any
-  }
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    const selector = useStructuralSharing(opts, router)
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    const matchSelection = useStore(matchStore, (match) =>
+      match ? selector(match as any) : dummyMatch,
+    )
 
-  const selector =
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-    useStructuralSharing(opts, router)
+    if (matchSelection !== dummyMatch) {
+      return matchSelection as any
+    }
+  } else {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    const selector = useStructuralSharing(opts, router)
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    const matchSelection = useRouterStateSelector(router, (state) => {
+      const match = state.matches.find(
+        (candidate) => candidate.routeId === routeId,
+      )
+      return match ? selector(match as any) : dummyMatch
+    })
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  const matchSelection = useStore(matchStore, (match) =>
-    match ? selector(match as any) : dummyMatch,
-  )
-
-  if (matchSelection !== dummyMatch) {
-    return matchSelection as any
+    if (matchSelection !== dummyMatch) {
+      return matchSelection as any
+    }
   }
 
   if (opts.shouldThrow ?? true) {
