@@ -1,7 +1,15 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import { createMemoryHistory } from '@tanstack/history'
 import { BaseRootRoute, BaseRoute } from '../src'
 import { createTestRouter } from './routerTestUtils'
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
 
 function createRouter() {
   const rootRoute = new BaseRootRoute({})
@@ -81,5 +89,52 @@ describe('render frames', () => {
         } as any,
       ),
     ).toBe(false)
+  })
+
+  test('an explicit pending query resolves against the head, not the frame', async () => {
+    const gate = deferred()
+    const rootRoute = new BaseRootRoute({})
+    const indexRoute = new BaseRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+    })
+    const slowRoute = new BaseRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+    })
+    const router = createTestRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    await router.load()
+
+    // The frame the still-visible route is presenting: `/`, not `/slow`.
+    const presented = router.stores.__store.get()
+
+    const navigation = router.navigate({ to: '/slow' })
+    await vi.waitFor(() =>
+      expect(router.stores.status.get()).toBe('pending'),
+    )
+
+    // `pending: true` asks about the navigation in flight. A destination-aware
+    // indicator rendered by the route still on screen presents the older frame,
+    // but must still recognise where the router is going — it only ever renders
+    // before the commit, so resolving this against the presented frame would
+    // mean it could never light up at all.
+    expect(
+      router.matchRoute({ to: '/slow' } as any, {
+        _state: presented,
+        pending: true,
+      } as any),
+    ).toBeTruthy()
+
+    // Ordinary matching still follows what is on screen.
+    expect(
+      router.matchRoute({ to: '/slow' } as any, { _state: presented } as any),
+    ).toBe(false)
+
+    gate.resolve()
+    await navigation
   })
 })
