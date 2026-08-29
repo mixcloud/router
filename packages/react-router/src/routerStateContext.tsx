@@ -97,6 +97,26 @@ export function RouterStateProvider({
     let staging = false
     let pending: RouterRenderFrame | undefined
 
+    // Navigation progress is not route content. The committed scope stays on
+    // the route that is visible, but its status tracks the head, so progress
+    // UI outside the route tree — a global loading bar, say — still sees a
+    // navigation start and finish. Location and matches are untouched, so this
+    // cannot surface a route the user cannot see.
+    const syncProgress = (head: RouterRenderFrame) => {
+      if (
+        root.frame.status === head.status &&
+        root.frame.isLoading === head.isLoading
+      ) {
+        return
+      }
+      root.frame = {
+        ...root.frame,
+        status: head.status,
+        isLoading: head.isLoading,
+      }
+      root.notify()
+    }
+
     const owner: RouterStateOwner = {
       router,
       root,
@@ -133,11 +153,14 @@ export function RouterStateProvider({
         return true
       },
       publish: () => {
+        const head = router.stores.__store.get()
         if (staging || pending) {
+          syncProgress(head)
           return
         }
-        const nextFrame = router.stores.__store.get()
+        const nextFrame = head
         if (nextFrame.status === 'pending') {
+          syncProgress(head)
           return
         }
         if (nextFrame.frameId === root.frame.frameId) {
@@ -207,19 +230,25 @@ export function useRouterStateSelector<TSelected>(
   // work in progress, not necessarily what anyone can see.
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const rendered = React.useRef<TSelected>(undefined as TSelected)
-  // The selection that actually reached the screen. Boxed so that a committed
-  // `undefined` is distinguishable from having committed nothing yet.
+  // What actually reached the screen: the selection, and the selector and
+  // comparator that produced it. Kept together, because comparing a value from
+  // one selector against a value from another is meaningless. Boxed so that a
+  // committed `undefined` is distinguishable from having committed nothing yet.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const committed = React.useRef<{ value: TSelected } | undefined>(undefined)
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const latest = React.useRef({ selector, compare })
-  latest.current = { selector, compare }
+  const committed = React.useRef<
+    | {
+        value: TSelected
+        selector: (state: RouterState<any>) => TSelected
+        compare: (a: TSelected, b: TSelected) => boolean
+      }
+    | undefined
+  >(undefined)
 
   rendered.current = selector(scope.frame)
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useLayoutEffect(() => {
-    committed.current = { value: rendered.current }
+    committed.current = { value: rendered.current, selector, compare }
   })
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -227,14 +256,19 @@ export function useRouterStateSelector<TSelected>(
     // Re-render only when this subscriber's own selection changed, which is
     // what keeps selector-level render counts identical to the store path.
     //
-    // Compare against the committed selection, never the in-progress one: a
-    // discarded render leaves a value here that was never presented, and
-    // comparing against it would skip the re-render that should have shown
-    // the frame, leaving this consumer stuck on what is on screen.
+    // Everything here comes from the committed render, never the one in
+    // progress: a discarded render leaves behind a selection, and a selector,
+    // that were never presented. Comparing against either would skip the
+    // re-render that should have shown the frame, leaving this consumer stuck
+    // on what is on screen.
     return scope.subscribe((frame) => {
-      const next = latest.current.selector(frame)
       const onScreen = committed.current
-      if (!onScreen || !latest.current.compare(onScreen.value, next)) {
+      if (!onScreen) {
+        forceRender()
+        return
+      }
+      const next = onScreen.selector(frame)
+      if (!onScreen.compare(onScreen.value, next)) {
         forceRender()
       }
     })
