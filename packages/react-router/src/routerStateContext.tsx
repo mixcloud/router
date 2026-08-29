@@ -128,6 +128,120 @@ const routerStateOwnerContext = React.createContext<
   RouterStateOwner | undefined
 >(undefined)
 
+/**
+ * Everything a router's publications need, closed over that one router.
+ *
+ * Built outside the component because it belongs to the router, not to a
+ * mount: a provider handed a different router has to build a new one rather
+ * than keep publishing through the old router's scopes.
+ */
+function createOwner(router: AnyRouter): RouterStateOwner {
+  const initial = router.stores.__store.get()
+  const root = createScope(router, initial)
+  const route = createScope(router, initial)
+  let staging = false
+  let pending: RouterRenderFrame | undefined
+
+  // Navigation progress is not route content. Both scopes stay on the route
+  // they are presenting, but their status tracks the head, so progress UI —
+  // a global loading bar outside the route tree, or a spinner rendered by the
+  // route the user is leaving — sees a navigation start and finish. Location
+  // and matches are untouched, so this cannot surface a route the user
+  // cannot see.
+  const syncProgress = (head: RouterRenderFrame) => {
+    let changed = false
+    for (const scope of [root, route]) {
+      const nextCommitted = withProgress(scope.committed, head)
+      if (nextCommitted !== scope.committed) {
+        scope.committed = nextCommitted
+        changed = true
+      }
+      if (scope.staged) {
+        const nextStaged = withProgress(scope.staged, head)
+        if (nextStaged !== scope.staged) {
+          scope.staged = nextStaged
+          changed = true
+        }
+      }
+    }
+    if (changed) {
+      // A refresh, never an offer. This runs from the store's subscription,
+      // outside any transition: offering the staged publication here would
+      // let an urgent update move the visible tree onto a route that has not
+      // committed. Consumers re-read the slot they are already presenting,
+      // which is where the overlaid progress now is.
+      root.notify()
+      route.notify()
+    }
+  }
+
+  const owner: RouterStateOwner = {
+    router,
+    root,
+    route,
+    get frame() {
+      return root.committed
+    },
+    begin: () => {
+      staging = true
+    },
+    stage: (nextFrame) => {
+      staging = false
+      pending = nextFrame
+      // Only the route subtree is offered a staged publication, and only the
+      // render that accepts it presents it. Readers outside that subtree, and
+      // readers whose own selection did not change, stay on the committed
+      // publication until this navigation commits.
+      route.staged = nextFrame
+      // The one and only offer, and it is inside `startTransition`.
+      route.notify(nextFrame)
+      return nextFrame
+    },
+    cancel: () => {
+      staging = false
+      pending = undefined
+      route.staged = undefined
+      route.notify()
+      owner.publish()
+    },
+    commit: (nextFrame) => {
+      if (pending?.frameId !== nextFrame.frameId) {
+        return false
+      }
+      pending = undefined
+      // The staged publication is now what everyone has committed, so the
+      // staged slot empties and both scopes resolve to it.
+      root.committed = nextFrame
+      route.committed = nextFrame
+      route.staged = undefined
+      root.notify()
+      route.notify()
+      return true
+    },
+    publish: () => {
+      const head = router.stores.__store.get()
+      if (staging || pending) {
+        syncProgress(head)
+        return
+      }
+      const nextFrame = head
+      if (nextFrame.status === 'pending') {
+        syncProgress(head)
+        return
+      }
+      if (nextFrame.frameId === root.committed.frameId) {
+        return
+      }
+      root.committed = nextFrame
+      route.committed = nextFrame
+      route.staged = undefined
+      root.notify()
+      route.notify()
+    },
+  }
+  return owner
+}
+
 export function RouterStateProvider({
   router,
   children,
@@ -135,112 +249,12 @@ export function RouterStateProvider({
   router: AnyRouter
   children: React.ReactNode
 }) {
+  // Keyed by router identity. A mounted provider can be handed a different
+  // router — a test rerender, HMR, switching tenant — and an owner built for
+  // the previous one would keep reading and staging that router's state.
   const ownerRef = React.useRef<RouterStateOwner | undefined>(undefined)
-  if (!ownerRef.current) {
-    const initial = router.stores.__store.get()
-    const root = createScope(router, initial)
-    const route = createScope(router, initial)
-    let staging = false
-    let pending: RouterRenderFrame | undefined
-
-    // Navigation progress is not route content. Both scopes stay on the route
-    // they are presenting, but their status tracks the head, so progress UI —
-    // a global loading bar outside the route tree, or a spinner rendered by the
-    // route the user is leaving — sees a navigation start and finish. Location
-    // and matches are untouched, so this cannot surface a route the user
-    // cannot see.
-    const syncProgress = (head: RouterRenderFrame) => {
-      let changed = false
-      for (const scope of [root, route]) {
-        const nextCommitted = withProgress(scope.committed, head)
-        if (nextCommitted !== scope.committed) {
-          scope.committed = nextCommitted
-          changed = true
-        }
-        if (scope.staged) {
-          const nextStaged = withProgress(scope.staged, head)
-          if (nextStaged !== scope.staged) {
-            scope.staged = nextStaged
-            changed = true
-          }
-        }
-      }
-      if (changed) {
-        // A refresh, never an offer. This runs from the store's subscription,
-        // outside any transition: offering the staged publication here would
-        // let an urgent update move the visible tree onto a route that has not
-        // committed. Consumers re-read the slot they are already presenting,
-        // which is where the overlaid progress now is.
-        root.notify()
-        route.notify()
-      }
-    }
-
-    const owner: RouterStateOwner = {
-      router,
-      root,
-      route,
-      get frame() {
-        return root.committed
-      },
-      begin: () => {
-        staging = true
-      },
-      stage: (nextFrame) => {
-        staging = false
-        pending = nextFrame
-        // Only the route subtree is offered a staged publication, and only the
-        // render that accepts it presents it. Readers outside that subtree, and
-        // readers whose own selection did not change, stay on the committed
-        // publication until this navigation commits.
-        route.staged = nextFrame
-        // The one and only offer, and it is inside `startTransition`.
-        route.notify(nextFrame)
-        return nextFrame
-      },
-      cancel: () => {
-        staging = false
-        pending = undefined
-        route.staged = undefined
-        route.notify()
-        owner.publish()
-      },
-      commit: (nextFrame) => {
-        if (pending?.frameId !== nextFrame.frameId) {
-          return false
-        }
-        pending = undefined
-        // The staged publication is now what everyone has committed, so the
-        // staged slot empties and both scopes resolve to it.
-        root.committed = nextFrame
-        route.committed = nextFrame
-        route.staged = undefined
-        root.notify()
-        route.notify()
-        return true
-      },
-      publish: () => {
-        const head = router.stores.__store.get()
-        if (staging || pending) {
-          syncProgress(head)
-          return
-        }
-        const nextFrame = head
-        if (nextFrame.status === 'pending') {
-          syncProgress(head)
-          return
-        }
-        if (nextFrame.frameId === root.committed.frameId) {
-          return
-        }
-        root.committed = nextFrame
-        route.committed = nextFrame
-        route.staged = undefined
-        root.notify()
-        route.notify()
-      },
-    }
-    ownerRef.current = owner
+  if (!ownerRef.current || ownerRef.current.router !== router) {
+    ownerRef.current = createOwner(router)
   }
 
   const owner = ownerRef.current
