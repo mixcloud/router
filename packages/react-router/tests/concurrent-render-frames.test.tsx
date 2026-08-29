@@ -536,4 +536,105 @@ describe('concurrent render frames', () => {
     await navigation
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
   })
+
+  /**
+   * The isolation depends on the staged publication being *offered* only from
+   * inside the Router's `startTransition`. Progress notifications do not come
+   * from there — they come from the store's subscription, on an urgent lane —
+   * so an offer sent from one would pull the visible tree onto a route that has
+   * not committed.
+   *
+   * This guards the property rather than reproducing a failure: today the head
+   * stays `pending` for exactly as long as a frame is staged, so a progress
+   * change cannot occur inside that window and the notification never fires.
+   * The protocol should not depend on that coincidence, and this test fails if
+   * a future change makes progress movable while a frame is staged without
+   * keeping offers transition-scoped.
+   */
+  test('a progress notification during a staged navigation cannot move the visible route', async () => {
+    const gate = deferred()
+    let releaseNext: () => void = () => {}
+    let nextReady = false
+    const nextGate = new Promise<void>((resolve) => {
+      releaseNext = () => {
+        nextReady = true
+        resolve()
+      }
+    })
+
+    function NextPage() {
+      if (!nextReady) {
+        throw nextGate
+      }
+      return <h1>Next Title</h1>
+    }
+
+    function Inside() {
+      const pathname = useRouterState({ select: (s) => s.location.pathname })
+      return <div data-testid="inside">{pathname}</div>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => (
+        <>
+          <h1>Index Title</h1>
+          <Inside />
+        </>
+      ),
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      component: NextPage,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    expect(screen.getByTestId('inside').textContent).toBe('/')
+
+    // Stage a navigation whose route suspends, so `/next` sits in the staged
+    // slot with the previous route still on screen.
+    let first!: Promise<void>
+    act(() => {
+      first = router.navigate({ to: '/next' })
+    })
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/next'),
+    )
+    expect(screen.getByTestId('inside').textContent).toBe('/')
+
+    // Now move progress while that navigation is still suspended. The
+    // notification this produces is urgent, and must not carry the staged
+    // route with it.
+    let second!: Promise<void>
+    act(() => {
+      second = router.navigate({ to: '/slow' })
+    })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+
+    expect(screen.getByTestId('inside').textContent).toBe('/')
+
+    releaseNext()
+    gate.resolve()
+    await act(async () => {
+      await nextGate
+      await gate.promise
+    })
+    await first.catch(() => {})
+    await second.catch(() => {})
+  })
 })

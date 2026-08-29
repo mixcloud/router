@@ -9,7 +9,14 @@ import type { AnyRouter, RouterState } from '@tanstack/router-core'
 
 export type RouterRenderFrame = RouterState<any>
 
-type FrameSubscriber = (frame: RouterRenderFrame) => void
+/**
+ * Notified either with a staged publication being *offered* — which only ever
+ * happens from inside the Router's `startTransition` — or with nothing, meaning
+ * "re-read whatever you are already presenting". A subscriber may move onto a
+ * staged publication only in the first case, so no notification sent outside a
+ * transition can move a consumer off the route it is showing.
+ */
+type FrameSubscriber = (offered: RouterRenderFrame | undefined) => void
 
 /**
  * A position in the tree, and the publications that position can present.
@@ -36,7 +43,7 @@ type RouterStateScope = {
   /** A publication offered to the render presenting it, not yet committed. */
   staged: RouterRenderFrame | undefined
   subscribe: (subscriber: FrameSubscriber) => () => void
-  notify: () => void
+  notify: (offered?: RouterRenderFrame) => void
 }
 
 type RouterStateOwner = {
@@ -103,11 +110,10 @@ function createScope(
         subscribers.delete(subscriber)
       }
     },
-    notify: () => {
-      const frameToPresent = offeredFrame(scope)
+    notify: (offered) => {
       // Copy first: a subscriber may unsubscribe while we iterate.
       for (const subscriber of Array.from(subscribers)) {
-        subscriber(frameToPresent)
+        subscriber(offered)
       }
     },
   }
@@ -160,6 +166,11 @@ export function RouterStateProvider({
         }
       }
       if (changed) {
+        // A refresh, never an offer. This runs from the store's subscription,
+        // outside any transition: offering the staged publication here would
+        // let an urgent update move the visible tree onto a route that has not
+        // committed. Consumers re-read the slot they are already presenting,
+        // which is where the overlaid progress now is.
         root.notify()
         route.notify()
       }
@@ -183,7 +194,8 @@ export function RouterStateProvider({
         // readers whose own selection did not change, stay on the committed
         // publication until this navigation commits.
         route.staged = nextFrame
-        route.notify()
+        // The one and only offer, and it is inside `startTransition`.
+        route.notify(nextFrame)
         return nextFrame
       },
       cancel: () => {
@@ -327,34 +339,14 @@ export function useRouterStateSelector<TSelected>(
     // selector, that were never presented. Comparing against either would skip
     // the re-render that should have shown the frame, leaving this consumer
     // stuck on what is on screen.
-    const unsubscribe = scope.subscribe((frame) => {
-      const accept = () =>
-        setPresenting((previous) => ({
-          frameId: frame.frameId,
-          revision: previous.revision + 1,
-        }))
+    // Re-read the publication this consumer is already presenting, without
+    // moving it onto another one. Used for every notification that is not an
+    // offer, and when the subscription is installed.
+    const refresh = () => {
       const onScreen = committed.current
       if (!onScreen) {
-        accept()
         return
       }
-      const next = onScreen.selector(frame)
-      if (!onScreen.compare(onScreen.value, next)) {
-        accept()
-      }
-    })
-
-    // A publication can land between this consumer's render and this effect —
-    // `MatchesInner` commits a frame from a layout effect of its own — and a
-    // notification sent then reaches nobody who is not yet listening. So
-    // re-read on subscribing, the way `useSyncExternalStore` does.
-    //
-    // This re-reads *this consumer's own* publication rather than whatever is
-    // newest: it keeps `frameId` and only forces the render, so a committed
-    // tree still resolves to the committed slot and a staged frame stays with
-    // the render presenting it.
-    const onScreen = committed.current
-    if (onScreen) {
       setPresenting((previous) => {
         const next = onScreen.selector(resolveFrame(scope, previous.frameId))
         return onScreen.compare(onScreen.value, next)
@@ -362,6 +354,34 @@ export function useRouterStateSelector<TSelected>(
           : { ...previous, revision: previous.revision + 1 }
       })
     }
+
+    const unsubscribe = scope.subscribe((offered) => {
+      if (!offered) {
+        refresh()
+        return
+      }
+      const onScreen = committed.current
+      if (!onScreen) {
+        setPresenting((previous) => ({
+          frameId: offered.frameId,
+          revision: previous.revision + 1,
+        }))
+        return
+      }
+      const next = onScreen.selector(offered)
+      if (!onScreen.compare(onScreen.value, next)) {
+        setPresenting((previous) => ({
+          frameId: offered.frameId,
+          revision: previous.revision + 1,
+        }))
+      }
+    })
+
+    // A publication can land between this consumer's render and this effect —
+    // `MatchesInner` commits a frame from a layout effect of its own — and a
+    // notification sent then reaches nobody who is not yet listening. So
+    // re-read on subscribing, the way `useSyncExternalStore` does.
+    refresh()
 
     return unsubscribe
   }, [scope])
