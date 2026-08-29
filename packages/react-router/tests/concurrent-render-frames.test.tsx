@@ -334,4 +334,67 @@ describe('concurrent render frames', () => {
       expect(screen.getByTestId('presented').textContent).toBe('/next'),
     )
   })
+
+  /**
+   * Navigation progress is not route content: a global indicator sitting
+   * outside the route tree must still see a navigation start and finish, even
+   * though that scope deliberately stays on the committed route.
+   */
+  test('navigation progress reaches a consumer outside the route tree', async () => {
+    const gate = deferred()
+
+    function Progress() {
+      const isLoading = useRouterState({ select: (s) => s.isLoading })
+      return <div data-testid="loading">{String(isLoading)}</div>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+
+    render(
+      <RouterContextProvider router={router}>
+        <Progress />
+        <Matches />
+      </RouterContextProvider>,
+    )
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('loading').textContent).toBe('false'),
+    )
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/slow' })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('loading').textContent).toBe('true'),
+    )
+
+    await act(async () => {
+      gate.resolve()
+      await gate.promise
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('loading').textContent).toBe('false'),
+    )
+  })
 })
