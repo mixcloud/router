@@ -202,27 +202,45 @@ export function useRouterStateSelector<TSelected>(
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const [, forceRender] = React.useReducer((count: number) => count + 1, 0)
+  // The selection for the render currently executing. A render can be
+  // discarded — suspended, interrupted, or superseded — so this is
+  // work in progress, not necessarily what anyone can see.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const selection = React.useRef<TSelected>(undefined as TSelected)
+  const rendered = React.useRef<TSelected>(undefined as TSelected)
+  // The selection that actually reached the screen. Boxed so that a committed
+  // `undefined` is distinguishable from having committed nothing yet.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const committed = React.useRef<{ value: TSelected } | undefined>(undefined)
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const latest = React.useRef({ selector, compare })
   latest.current = { selector, compare }
 
-  selection.current = selector(scope.frame)
+  rendered.current = selector(scope.frame)
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useLayoutEffect(() => {
+    committed.current = { value: rendered.current }
+  })
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   React.useEffect(() => {
     // Re-render only when this subscriber's own selection changed, which is
     // what keeps selector-level render counts identical to the store path.
+    //
+    // Compare against the committed selection, never the in-progress one: a
+    // discarded render leaves a value here that was never presented, and
+    // comparing against it would skip the re-render that should have shown
+    // the frame, leaving this consumer stuck on what is on screen.
     return scope.subscribe((frame) => {
       const next = latest.current.selector(frame)
-      if (!latest.current.compare(selection.current, next)) {
+      const onScreen = committed.current
+      if (!onScreen || !latest.current.compare(onScreen.value, next)) {
         forceRender()
       }
     })
   }, [scope])
 
-  return selection.current
+  return rendered.current
 }
 
 /**
