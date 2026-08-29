@@ -397,4 +397,143 @@ describe('concurrent render frames', () => {
       expect(screen.getByTestId('loading').textContent).toBe('false'),
     )
   })
+
+  /**
+   * The same isolation, one level in. A reader that sits *inside* the visible
+   * route and re-renders for an unrelated urgent reason — a keystroke, a
+   * timer, a local toggle — must keep observing the route on screen. The
+   * staged publication belongs to the render that is presenting it, and that
+   * render has not committed yet.
+   */
+  test('a reader inside the visible route does not read ahead when re-rendered urgently', async () => {
+    let releaseNext: () => void = () => {}
+    let nextReady = false
+    const nextGate = new Promise<void>((resolve) => {
+      releaseNext = () => {
+        nextReady = true
+        resolve()
+      }
+    })
+
+    function NextPage() {
+      if (!nextReady) {
+        throw nextGate
+      }
+      return <h1>Next Title</h1>
+    }
+
+    function IndexPage() {
+      const [bumps, setBumps] = React.useState(0)
+      const pathname = useRouterState({ select: (s) => s.location.pathname })
+      return (
+        <>
+          <h1>Index Title</h1>
+          <button type="button" onClick={() => setBumps((n) => n + 1)}>
+            Bump
+          </button>
+          <div data-testid="inside">{`${pathname}|${bumps}`}</div>
+        </>
+      )
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: IndexPage,
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      component: NextPage,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    expect(screen.getByTestId('inside').textContent).toBe('/|0')
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/next' })
+    })
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/next'),
+    )
+    expect(screen.getByRole('heading', { name: 'Index Title' })).toBeVisible()
+
+    // An urgent update inside the still-visible route. It must not drag the
+    // staged route into a tree that has not committed it.
+    fireEvent.click(screen.getByRole('button', { name: 'Bump' }))
+    expect(screen.getByTestId('inside').textContent).toBe('/|1')
+
+    await act(async () => {
+      releaseNext()
+      await nextGate
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+  })
+
+  /**
+   * Progress is not route content, so it has to cross the presentation
+   * boundary: a spinner rendered by the visible route must still see the
+   * navigation it is waiting on.
+   */
+  test('navigation progress reaches a consumer inside the route tree', async () => {
+    const gate = deferred()
+
+    function Progress() {
+      const isLoading = useRouterState({ select: (s) => s.isLoading })
+      return <div data-testid="loading">{String(isLoading)}</div>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => (
+        <>
+          <h1>Index Title</h1>
+          <Progress />
+        </>
+      ),
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('loading').textContent).toBe('false'),
+    )
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/slow' })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('loading').textContent).toBe('true'),
+    )
+
+    await act(async () => {
+      gate.resolve()
+      await gate.promise
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+  })
 })
