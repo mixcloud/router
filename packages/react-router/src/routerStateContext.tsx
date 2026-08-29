@@ -316,7 +316,7 @@ export function useRouterStateSelector<TSelected>(
   })
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  React.useEffect(() => {
+  useLayoutEffect(() => {
     // Accept a publication only when this subscriber's own selection changed,
     // which is what keeps selector-level render counts identical to the store
     // path. A consumer that declines stays on the committed publication, where
@@ -327,7 +327,7 @@ export function useRouterStateSelector<TSelected>(
     // selector, that were never presented. Comparing against either would skip
     // the re-render that should have shown the frame, leaving this consumer
     // stuck on what is on screen.
-    return scope.subscribe((frame) => {
+    const unsubscribe = scope.subscribe((frame) => {
       const accept = () =>
         setPresenting((previous) => ({
           frameId: frame.frameId,
@@ -343,6 +343,27 @@ export function useRouterStateSelector<TSelected>(
         accept()
       }
     })
+
+    // A publication can land between this consumer's render and this effect —
+    // `MatchesInner` commits a frame from a layout effect of its own — and a
+    // notification sent then reaches nobody who is not yet listening. So
+    // re-read on subscribing, the way `useSyncExternalStore` does.
+    //
+    // This re-reads *this consumer's own* publication rather than whatever is
+    // newest: it keeps `frameId` and only forces the render, so a committed
+    // tree still resolves to the committed slot and a staged frame stays with
+    // the render presenting it.
+    const onScreen = committed.current
+    if (onScreen) {
+      setPresenting((previous) => {
+        const next = onScreen.selector(resolveFrame(scope, previous.frameId))
+        return onScreen.compare(onScreen.value, next)
+          ? previous
+          : { ...previous, revision: previous.revision + 1 }
+      })
+    }
+
+    return unsubscribe
   }, [scope])
 
   return rendered.current
