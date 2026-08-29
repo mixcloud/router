@@ -9,6 +9,10 @@ import {
 } from '@testing-library/react'
 import * as React from 'react'
 import {
+  RouterStateProvider,
+  useRouterStateOwner,
+} from '../src/routerStateContext'
+import {
   Link,
   Matches,
   Outlet,
@@ -20,6 +24,7 @@ import {
   useLocation,
   useRouterState,
 } from '../src'
+import type { AnyRouter } from '@tanstack/router-core'
 
 afterEach(() => {
   window.history.replaceState(null, 'root', '/')
@@ -636,5 +641,66 @@ describe('concurrent render frames', () => {
     })
     await first.catch(() => {})
     await second.catch(() => {})
+  })
+
+  /**
+   * A mounted provider can be handed a different router — a test rerender,
+   * HMR, switching tenant. The frame owner closes over the router it was built
+   * for, so it has to be rebuilt, or every publication after the swap goes
+   * through the previous router's scopes.
+   *
+   * Asserted on the owner rather than through a rendered navigation: swapping
+   * the `router` prop of a mounted `RouterProvider` does not work upstream
+   * either — with `experimental_concurrentRenderFrames` off, the same swap
+   * renders an empty tree — so there is no end-to-end behaviour to compare
+   * against. This pins the part that is this change's to get right.
+   */
+  test('a provider handed a different router builds an owner for it', async () => {
+    const owners: Array<AnyRouter | undefined> = []
+
+    function OwnerProbe() {
+      const owner = useRouterStateOwner()
+      owners.push(owner?.router)
+      return null
+    }
+
+    const makeRouter = () => {
+      const rootRoute = createRootRoute({ component: () => <Outlet /> })
+      const indexRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/',
+        component: () => <h1>Index Title</h1>,
+      })
+      return createRouter({
+        routeTree: rootRoute.addChildren([indexRoute]),
+        experimental_concurrentRenderFrames: true,
+      })
+    }
+
+    const first = makeRouter()
+    const second = makeRouter()
+
+    const { rerender } = render(
+      <RouterStateProvider router={first}>
+        <OwnerProbe />
+      </RouterStateProvider>,
+    )
+    expect(owners.at(-1)).toBe(first)
+
+    rerender(
+      <RouterStateProvider router={second}>
+        <OwnerProbe />
+      </RouterStateProvider>,
+    )
+    expect(owners.at(-1)).toBe(second)
+
+    // And back, to pin that identity is what decides it rather than a one-shot
+    // "has the router ever changed" flag.
+    rerender(
+      <RouterStateProvider router={first}>
+        <OwnerProbe />
+      </RouterStateProvider>,
+    )
+    expect(owners.at(-1)).toBe(first)
   })
 })
