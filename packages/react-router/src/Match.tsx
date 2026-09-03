@@ -63,6 +63,21 @@ const concurrentOutletMatchSelectionEqual = (
   b: ConcurrentOutletMatchSelection,
 ) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
 
+/**
+ * What an `Outlet` selects from a frame that no longer matches its route.
+ *
+ * A frame is offered to every subscribed consumer, including ones React is
+ * about to unmount because the new frame's match tree has a different shape.
+ * Those consumers still run their selector against the new frame, so it has to
+ * describe a route that has left the tree rather than assume its own match is
+ * still there. Rendering no child is correct for a subtree that is going away.
+ */
+const absentOutletMatchSelection: ConcurrentOutletMatchSelection = [
+  false,
+  undefined,
+  undefined,
+]
+
 const canWrapInSuspense = (
   router: ReturnType<typeof useRouter>,
   route: AnyRoute,
@@ -319,7 +334,8 @@ export const Outlet = React.memo(function OutletImpl() {
           const parentIndex = matches.findIndex(
             (match) => match.routeId === routeId,
           )
-          const parentMatch = matches[parentIndex]!
+          const parentMatch = matches[parentIndex]
+          if (!parentMatch) return absentOutletMatchSelection
           return [
             !!parentMatch._notFound,
             parentMatch.error,

@@ -655,6 +655,82 @@ describe('concurrent render frames', () => {
    * renders an empty tree — so there is no end-to-end behaviour to compare
    * against. This pins the part that is this change's to get right.
    */
+  /**
+   * A frame is offered to every subscribed consumer, so an `Outlet` belonging
+   * to a route the next frame drops still runs its selector against that
+   * frame. Reading its own match unconditionally threw there, and because a
+   * scope notifies its subscribers in a plain loop, the throw stopped every
+   * later consumer being offered the frame — so `Matches` never acknowledged
+   * it and the navigation stayed pending for good.
+   */
+  test('a route leaving the match tree does not wedge the navigation', async () => {
+    const rootRoute = createRootRoute({
+      component: () => <Outlet />,
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    // A route with its own Outlet: navigating away from its child drops both
+    // this route and the nested one from the match tree.
+    const nestedRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/nested',
+      component: () => (
+        <div>
+          <h1>Nested Title</h1>
+          <Outlet />
+        </div>
+      ),
+    })
+    const nestedChildRoute = createRoute({
+      getParentRoute: () => nestedRoute,
+      path: '/child',
+      component: () => <h2>Nested Child Title</h2>,
+    })
+    const siblingRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/sibling',
+      component: () => <h1>Sibling Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([
+        indexRoute,
+        nestedRoute.addChildren([nestedChildRoute]),
+        siblingRoute,
+      ]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    render(
+      <RouterContextProvider router={router}>
+        <Matches />
+      </RouterContextProvider>,
+    )
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    let toChild!: Promise<void>
+    act(() => {
+      toChild = router.navigate({ to: '/nested/child' })
+    })
+    await waitFor(() =>
+      screen.getByRole('heading', { name: 'Nested Child Title' }),
+    )
+    await toChild
+
+    // The sibling's match tree has neither /nested nor /nested/child in it.
+    let toSibling!: Promise<void>
+    act(() => {
+      toSibling = router.navigate({ to: '/sibling' })
+    })
+
+    await waitFor(() => screen.getByRole('heading', { name: 'Sibling Title' }))
+    await toSibling
+    expect(router.stores.status.get()).toBe('idle')
+  })
+
   test('a provider handed a different router builds an owner for it', async () => {
     const owners: Array<AnyRouter | undefined> = []
 
