@@ -13,6 +13,10 @@ import { renderRouteNotFound } from './renderRouteNotFound'
 import { ScrollRestoration } from './scroll-restoration'
 import { ClientOnly } from './ClientOnly'
 import {
+  useFrameRootBoundary,
+  useRouterStateSelector,
+} from './routerStateContext'
+import {
   nonRouteComponentContext,
   wrapInNonRouteComponentContext,
 } from './nonRouteComponentContext'
@@ -43,10 +47,36 @@ type OutletMatchSelection = [
   parentNotFoundError: unknown,
 ]
 
+type ConcurrentOutletMatchSelection = [
+  parentGlobalNotFound: boolean,
+  parentNotFoundError: unknown,
+  childRouteId: string | undefined,
+]
+
 const outletMatchSelectionEqual = (
   a: OutletMatchSelection,
   b: OutletMatchSelection,
 ) => a[0] === b[0] && a[1] === b[1]
+
+const concurrentOutletMatchSelectionEqual = (
+  a: ConcurrentOutletMatchSelection,
+  b: ConcurrentOutletMatchSelection,
+) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
+
+/**
+ * What an `Outlet` selects from a frame that no longer matches its route.
+ *
+ * A frame is offered to every subscribed consumer, including ones React is
+ * about to unmount because the new frame's match tree has a different shape.
+ * Those consumers still run their selector against the new frame, so it has to
+ * describe a route that has left the tree rather than assume its own match is
+ * still there. Rendering no child is correct for a subtree that is going away.
+ */
+const absentOutletMatchSelection: ConcurrentOutletMatchSelection = [
+  false,
+  undefined,
+  undefined,
+]
 
 const canWrapInSuspense = (
   router: ReturnType<typeof useRouter>,
@@ -66,6 +96,15 @@ export const Match = React.memo(function MatchImpl({
   routeId: string
 }) {
   const router = useRouter()
+  if (router.options.experimental_concurrentRenderFrames) {
+    // The option is fixed for the mounted router, so this branch cannot change
+    // hook order during the component's lifetime.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const match = useRouterStateSelector(router, (state) =>
+      state.matches.find((candidate) => candidate.routeId === routeId),
+    )
+    return <MatchView router={router} match={match!} />
+  }
 
   if (isServer ?? router.isServer) {
     const match = router.stores.byRoute.get(routeId)!.get()!
@@ -101,9 +140,15 @@ function MatchView({
     : route.options.notFoundComponent
 
   const resolvedNoSsr = match.ssr === false || match.ssr === 'data-only'
+  const _isServer = isServer ?? router.isServer
+  // Once hydrated, a concurrent frame must suspend and acknowledge as one
+  // unit. During SSR and hydration, retain the route boundaries so the server
+  // can stream its shell and the client hydrates the same boundary tree.
+  const frameRootBoundary = useFrameRootBoundary(router, _isServer)
   // A root component may render the document itself. Only place its Suspense
   // boundary in pure CSR, inside an explicit shell, or when explicitly opted in.
   const ResolvedSuspenseBoundary =
+    !frameRootBoundary &&
     canWrapInSuspense(router, route, match.ssr) &&
     (route.options.wrapInSuspense ??
       pendingElement ??
@@ -277,7 +322,29 @@ export const Outlet = React.memo(function OutletImpl() {
   let parentNotFoundError: unknown
   let childRouteId: string | undefined
 
-  if (isServer ?? router.isServer) {
+  if (router.options.experimental_concurrentRenderFrames) {
+    // The option is fixed for the mounted router, so this branch cannot change
+    // hook order during the component's lifetime.
+    ;[parentGlobalNotFound, parentNotFoundError, childRouteId] =
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useRouterStateSelector(
+        router,
+        (state): ConcurrentOutletMatchSelection => {
+          const matches = state.matches
+          const parentIndex = matches.findIndex(
+            (match) => match.routeId === routeId,
+          )
+          const parentMatch = matches[parentIndex]
+          if (!parentMatch) return absentOutletMatchSelection
+          return [
+            !!parentMatch._notFound,
+            parentMatch.error,
+            matches[parentIndex + 1]?.routeId,
+          ]
+        },
+        concurrentOutletMatchSelectionEqual,
+      )
+  } else if (isServer ?? router.isServer) {
     const matches = router.stores.matches.get()
     const parentIndex = matches.findIndex((match) => match.routeId === routeId)
     const parentMatch = matches[parentIndex]!
@@ -314,7 +381,11 @@ export const Outlet = React.memo(function OutletImpl() {
 
   const nextMatch = <Match routeId={childRouteId} />
 
-  if (routeId === rootRouteId) {
+  // Matches owns the experiment's single acknowledgement boundary.
+  if (
+    routeId === rootRouteId &&
+    !router.options.experimental_concurrentRenderFrames
+  ) {
     return (
       <React.Suspense fallback={renderPending(router)}>
         {nextMatch}

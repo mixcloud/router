@@ -13,6 +13,7 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
+import { useRouterStateSelector } from './routerStateContext'
 
 import { useForwardedRef, useIntersectionObserver } from './utils'
 
@@ -262,7 +263,10 @@ export function useLinkProps<
       }
     }
 
-    const next = router.buildLocation({ ...options, from: options.from } as any)
+    const next = router.buildLocation({
+      ...options,
+      from: options.from,
+    } as any)
 
     // Use publicHref - it contains the correct href for display
     // When a rewrite changes the origin, publicHref is the full URL
@@ -557,12 +561,16 @@ export function useLinkProps<
     [stableActiveOptions, disabled, isHydrated, _options, router, to],
   )
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [href, externalLink, isActive] = useStore(
-    router.stores.location,
-    selectLinkState,
-    compareLinkState,
-  )
+  const [href, externalLink, isActive] = router.options
+    .experimental_concurrentRenderFrames
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+      useRouterStateSelector(
+        router,
+        (state) => selectLinkState(state.location),
+        compareLinkState,
+      )
+    : // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+      useStore(router.stores.location, selectLinkState, compareLinkState)
 
   // Get the active props
   const resolvedActiveProps: React.HTMLAttributes<HTMLAnchorElement> = isActive

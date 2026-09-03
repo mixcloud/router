@@ -4,7 +4,9 @@ import * as React from 'react'
 import { getLocationChangeInfo, trimPathRight } from '@tanstack/router-core'
 import { useLayoutEffect } from './utils'
 import { useRouter } from './useRouter'
+import { useRouterStateOwner } from './routerStateContext'
 import type { AnyRouter } from '@tanstack/router-core'
+import type { RouterRenderFrame } from './routerStateContext'
 
 export function settleOwner(
   owner: NonNullable<AnyRouter['_rendered']>,
@@ -17,10 +19,15 @@ export function settleOwner(
 
 export function Transitioner({
   t,
+  setRenderFrame,
 }: {
   t: React.Dispatch<React.SetStateAction<AnyRouter | undefined>>
+  setRenderFrame: React.Dispatch<
+    React.SetStateAction<RouterRenderFrame | undefined>
+  >
 }) {
   const router = useRouter()
+  const routerStateOwner = useRouterStateOwner()
   const acknowledgement = (router._rendered ??= [])
   const mounted =
     process.env.NODE_ENV !== 'production'
@@ -33,7 +40,23 @@ export function Transitioner({
       settleOwner(acknowledgement, false)
       acknowledgement.push(expected, resolve)
       t(router)
-      React.startTransition(fn)
+      React.startTransition(() => {
+        routerStateOwner?.begin()
+        try {
+          fn()
+          // Read the aggregate state after the batched writes, so the staged
+          // frame is exactly what this publication assembled.
+          const frame = routerStateOwner?.stage(router.stores.__store.get())
+          if (frame) {
+            acknowledgement[0 /* offered */] = frame.frameId
+            setRenderFrame(frame)
+          }
+        } catch (cause) {
+          routerStateOwner?.cancel()
+          setRenderFrame(undefined)
+          throw cause
+        }
+      })
     })
 
   // Subscribe before canonicalizing so the initial URL has exactly one load.
@@ -78,14 +101,17 @@ export function Transitioner({
       resolvedLocation?.href === location.href &&
       resolvedLocation.state.__TSR_key === location.state.__TSR_key
     ) {
-      acknowledgement.push(router.stores.matches.get(), (rendered) => {
-        if (rendered) {
-          router.emit({
-            type: 'onRendered',
-            ...getLocationChangeInfo(resolvedLocation, resolvedLocation),
-          })
-        }
-      })
+      acknowledgement.push(
+        routerStateOwner?.frame.frameId ?? router.stores.matches.get(),
+        (rendered) => {
+          if (rendered) {
+            router.emit({
+              type: 'onRendered',
+              ...getLocationChangeInfo(resolvedLocation, resolvedLocation),
+            })
+          }
+        },
+      )
     } else if (!router._tx) {
       router.load({ sync: true }).catch(console.error)
     }

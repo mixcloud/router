@@ -4,6 +4,7 @@ import * as React from 'react'
 import { hasKeys } from '@tanstack/router-core'
 import { Matches } from './Matches'
 import { routerContext } from './routerContext'
+import { RouterStateProvider } from './routerStateContext'
 import type {
   AnyRouter,
   RegisteredRouter,
@@ -36,9 +37,16 @@ export function RouterContextProvider<
     })
   }
 
+  const childrenWithState = router.options
+    .experimental_concurrentRenderFrames ? (
+    <RouterStateProvider router={router}>{children}</RouterStateProvider>
+  ) : (
+    children
+  )
+
   const provider = (
     <routerContext.Provider value={router as AnyRouter}>
-      {children}
+      {childrenWithState}
     </routerContext.Provider>
   )
 

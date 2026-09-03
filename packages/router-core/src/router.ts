@@ -550,6 +550,8 @@ export interface RouterState<
   in out TRouteTree extends AnyRoute = AnyRoute,
   in out TRouteMatch = MakeRouteMatchUnion,
 > {
+  /** Monotonic identity for one atomically assembled render snapshot. */
+  frameId: number
   status: 'pending' | 'idle'
   isLoading: boolean
   matches: Array<TRouteMatch>
@@ -1030,7 +1032,7 @@ export interface RouterCore<
   _serverResult?: ServerLoadResult
   /** Framework publication waiting for an exact render acknowledgement. */
   _rendered?: [
-    offered?: Array<AnyRouteMatch>,
+    offered?: Array<AnyRouteMatch> | number,
     settle?: (rendered: boolean) => void,
   ]
   /** Development-only HMR reload for a route and its descendants. */
@@ -2606,16 +2608,33 @@ export class RouterCore<
     }
     const next = this.buildLocation(matchLocation as any)
 
-    const isPending = this.stores.status.get() === 'pending'
+    const presentedState = (
+      opts as MatchRouteOptions & { _state?: RouterState }
+    )?._state
+    // An explicit `pending: true` query asks about the navigation in flight —
+    // "is this the link we are going to?" — which is a question about the head,
+    // not about what this render is showing. It is answered from the head
+    // whether or not a frame is presented, exactly as it always has been.
+    // Everything else resolves against the frame being presented.
+    const isPending = (
+      opts?.pending
+        ? this.stores.status.get()
+        : (presentedState?.status ?? this.stores.status.get())
+    ) === 'pending'
     if (opts?.pending && !isPending) {
       return false
     }
 
     const pending = opts?.pending ?? !isPending
 
-    const baseLocation = pending
-      ? this.latestLocation
-      : this.stores.resolvedLocation.get() || this.stores.location.get()
+    const baseLocation =
+      presentedState && !opts?.pending
+        ? pending
+          ? presentedState.location
+          : presentedState.resolvedLocation || presentedState.location
+        : pending
+          ? this.latestLocation
+          : this.stores.resolvedLocation.get() || this.stores.location.get()
 
     const match = findSingleMatch(
       next.pathname,
@@ -2700,6 +2719,7 @@ export function getInitialRouterState(
   location: ParsedLocation,
 ): RouterState<any> {
   return {
+    frameId: 0,
     isLoading: false,
     status: 'idle',
     resolvedLocation: undefined,

@@ -92,6 +92,7 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
   config: StoreConfig,
 ): RouterStores<TRouteTree> {
   const { createMutableStore, createReadonlyStore, batch } = config
+  let nextFrameId = 0
 
   // non reactive utilities
   const byRoute = new Map<string, MatchStore>()
@@ -110,6 +111,7 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
 
   // compatibility "big" state store
   const __store = createReadonlyStore(() => ({
+    frameId: nextFrameId++,
     status: status.get(),
     isLoading: status.get() === 'pending',
     matches: matches.get(),
