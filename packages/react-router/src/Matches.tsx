@@ -261,7 +261,20 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
           } as any,
         )
       },
-      [router, state],
+      [
+        router,
+        state,
+        // An explicit `matchRoute({ pending: true })` resolves against the
+        // head, so this hook has to re-render when the head moves — and a
+        // second navigation starting while the first is still pending changes
+        // only the location, which stages no frame and leaves the presented
+        // one identical. Without this a destination indicator would keep
+        // reporting the navigation that has already been superseded. It is the
+        // one hook that spans both, so it is the one that subscribes to both;
+        // non-pending queries still resolve against the presented frame.
+        // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
+        useStore(router.stores.location, (location) => location.href),
+      ],
     )
   }
 

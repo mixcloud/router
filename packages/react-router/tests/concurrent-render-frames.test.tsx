@@ -22,6 +22,7 @@ import {
   createRoute,
   createRouter,
   useLocation,
+  useMatchRoute,
   useRouterState,
 } from '../src'
 import type { AnyRouter } from '@tanstack/router-core'
@@ -1091,6 +1092,81 @@ describe('concurrent render frames', () => {
     })
     await navigation
     await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+  })
+
+
+  /**
+   * A destination indicator asks about the navigation in flight, so it
+   * resolves against the head. A second navigation starting while the first is
+   * still pending moves only the head location — no frame is staged, and the
+   * presented one is identical — so nothing would re-render it.
+   */
+  test('a pending matcher follows the head when a navigation is superseded', async () => {
+    const first = deferred()
+    const second = deferred()
+
+    function Indicator() {
+      const matchRoute = useMatchRoute()
+      const toFirst = !!matchRoute({ to: '/first', pending: true })
+      const toSecond = !!matchRoute({ to: '/second', pending: true })
+      return <div data-testid="target">{`${toFirst}|${toSecond}`}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Indicator />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const firstRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/first',
+      loader: () => first.promise,
+      component: () => <h1>First Title</h1>,
+    })
+    const secondRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/second',
+      loader: () => second.promise,
+      component: () => <h1>Second Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, firstRoute, secondRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    expect(screen.getByTestId('target').textContent).toBe('false|false')
+
+    act(() => {
+      void router.navigate({ to: '/first' })
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('target').textContent).toBe('true|false'),
+    )
+
+    // Supersede it. `status` stays 'pending' throughout, so the only thing
+    // that moves is the head location.
+    act(() => {
+      void router.navigate({ to: '/second' })
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('target').textContent).toBe('false|true'),
+    )
+
+    await act(async () => {
+      first.resolve()
+      second.resolve()
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Second Title' }))
   })
 
   /**
