@@ -6,7 +6,7 @@ import { rootRouteId } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { CatchBoundary } from './CatchBoundary'
 import { useRouter } from './useRouter'
-import { useStructuralSharing } from './useMatch'
+import { useStructuralSharing, withSelectorCache } from './useMatch'
 import { useLayoutEffect } from './utils'
 import { Transitioner, settleOwner } from './Transitioner'
 import { matchContext } from './matchContext'
@@ -37,6 +37,7 @@ import type {
   MatchRouteOptions,
   RegisteredRouter,
   ResolveRoute,
+  RouterState,
   ToSubOptionsProps,
 } from '@tanstack/router-core'
 
@@ -358,8 +359,12 @@ export function useMatches<
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const selectMatches = useStructuralSharing(opts, router)
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    return useRouterStateSelector(router, (state) =>
-      selectMatches(state.matches),
+    return useRouterStateSelector(
+      router,
+      withSelectorCache(
+        (state: RouterState<any>) => selectMatches(state.matches),
+        selectMatches,
+      ),
     ) as UseMatchesResult<TRouter, TSelected>
   }
 

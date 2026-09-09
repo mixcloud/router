@@ -3,7 +3,7 @@
 import { useStore } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
-import { useStructuralSharing } from './useMatch'
+import { useStructuralSharing, withSelectorCache } from './useMatch'
 import {
   useFrameMode,
   useRouterStateSelector,
@@ -60,8 +60,12 @@ export function useLocation<
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const selectLocation = useStructuralSharing(opts, router)
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
-    return useRouterStateSelector(router, (state) =>
-      selectLocation(state.location),
+    return useRouterStateSelector(
+      router,
+      withSelectorCache(
+        (state: RouterState<any>) => selectLocation(state.location),
+        selectLocation,
+      ),
     ) as UseLocationResult<TRouter, TSelected>
   }
 

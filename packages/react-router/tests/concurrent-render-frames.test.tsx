@@ -1004,6 +1004,95 @@ describe('concurrent render frames', () => {
     expect((router.stores.location.get().state as any).from).toBe(indexOnScreen)
   })
 
+
+  /**
+   * Structural sharing promises a referentially stable selection. Deciding
+   * whether an offer changed a consumer's selection runs its selector outside
+   * render, against a publication that may never commit, so that decision must
+   * not leave its cache describing a render nobody saw.
+   */
+  test('an offer does not disturb a structural-sharing selection', async () => {
+    let releaseNext: () => void = () => {}
+    let nextReady = false
+    const nextGate = new Promise<void>((resolve) => {
+      releaseNext = () => {
+        nextReady = true
+        resolve()
+      }
+    })
+
+    function NextPage() {
+      if (!nextReady) {
+        throw nextGate
+      }
+      return <h1>Next Title</h1>
+    }
+
+    const selections: Array<{ pathname: string }> = []
+
+    function IndexPage() {
+      const [bumps, setBumps] = React.useState(0)
+      // An object selection, so structural sharing is what keeps its identity
+      // stable across renders that do not change it.
+      const selected = useRouterState({
+        structuralSharing: true,
+        select: (state) => ({ pathname: state.location.pathname }),
+      })
+      selections.push(selected)
+      return (
+        <>
+          <h1>Index Title</h1>
+          <button type="button" onClick={() => setBumps((n) => n + 1)}>
+            Bump
+          </button>
+          <div data-testid="inside">{`${selected.pathname}|${bumps}`}</div>
+        </>
+      )
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: IndexPage,
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      component: NextPage,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    const onScreen = selections.at(-1)!
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/next' })
+    })
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/next'),
+    )
+
+    // The staged route is suspended, so the visible tree is still the one on
+    // screen. Re-render it urgently: its selection is unchanged, so it must be
+    // the same object it rendered before.
+    fireEvent.click(screen.getByRole('button', { name: 'Bump' }))
+    expect(screen.getByTestId('inside').textContent).toBe('/|1')
+    expect(selections.at(-1)).toBe(onScreen)
+
+    await act(async () => {
+      releaseNext()
+      await nextGate
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a

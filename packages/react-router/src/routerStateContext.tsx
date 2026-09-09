@@ -5,6 +5,7 @@ import { isServer } from '@tanstack/router-core/isServer'
 import { useLayoutEffect } from './utils'
 import { useHydrated } from './ClientOnly'
 import type { AnyRouter, RouterState } from '@tanstack/router-core'
+import type { CacheableSelector } from './useMatch'
 
 export type RouterRenderFrame = RouterState<any>
 
@@ -359,7 +360,7 @@ export function useFrameMode(router: AnyRouter): boolean {
 
 export function useRouterStateSelector<TSelected>(
   router: AnyRouter,
-  selector: (state: RouterState<any>) => TSelected,
+  selector: CacheableSelector<RouterState<any>, TSelected>,
   compare: (a: TSelected, b: TSelected) => boolean = defaultCompare,
   /**
    * Filled with a getter for the publication this consumer is presenting, for
@@ -412,7 +413,7 @@ export function useRouterStateSelector<TSelected>(
   const committed = React.useRef<
     | {
         value: TSelected
-        selector: (state: RouterState<any>) => TSelected
+        selector: CacheableSelector<RouterState<any>, TSelected>
         compare: (a: TSelected, b: TSelected) => boolean
       }
     | undefined
@@ -480,10 +481,21 @@ export function useRouterStateSelector<TSelected>(
       onScreen: NonNullable<typeof committed.current>,
       frame: RouterRenderFrame,
     ) => {
+      // A structural-sharing selector caches its last result to keep the
+      // selection referentially stable, and this runs it against a
+      // publication that may never commit. Writing that cache here would
+      // leave the still-visible tree comparing against a result it never
+      // rendered, and it would return a fresh object next time — breaking
+      // the stability the option promises. So the cache is put back
+      // afterwards; a consumer that accepts the offer re-renders and writes
+      // it for real.
+      const cached = onScreen.selector.snapshotCache?.()
       try {
         return onScreen.compare(onScreen.value, onScreen.selector(frame))
       } catch {
         return false
+      } finally {
+        onScreen.selector.restoreCache?.(cached)
       }
     }
 
