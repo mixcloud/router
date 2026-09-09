@@ -1,7 +1,6 @@
 'use client'
 
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useLayoutEffect } from './utils'
 import { useHydrated } from './ClientOnly'
@@ -298,21 +297,61 @@ export function useRouterStateOwner() {
   return React.useContext(routerStateOwnerContext)
 }
 
+/**
+ * The scope for a reader that has no owner above it for the router it names —
+ * `useRouterState({ router })` pointing at another instance, or a consumer
+ * rendered outside `RouterProvider`.
+ *
+ * There is no presentation to isolate here, so this scope presents the store
+ * head and treats every notification as a plain refresh: the same content the
+ * default `useStore` path gives. Going through the *same* hooks as a scoped
+ * reader is the point — the argument can change between renders, and a reader
+ * that changed hook shape with it would crash on the hook order rather than
+ * merely read a different router. Cached per router so the identity the
+ * subscription effect depends on stays stable.
+ */
+const detachedScopes = new WeakMap<AnyRouter, RouterStateScope>()
+
+function detachedScope(router: AnyRouter): RouterStateScope {
+  const existing = detachedScopes.get(router)
+  if (existing) {
+    return existing
+  }
+  const scope: RouterStateScope = {
+    router,
+    get committed() {
+      return router.stores.__store.get()
+    },
+    staged: undefined,
+    subscribe: (subscriber) => {
+      const subscription = router.stores.__store.subscribe(() =>
+        subscriber(undefined),
+      )
+      return () => subscription.unsubscribe()
+    },
+    notify: () => {},
+  }
+  detachedScopes.set(router, scope)
+  return scope
+}
+
 export function useRouterStateSelector<TSelected>(
   router: AnyRouter,
   selector: (state: RouterState<any>) => TSelected,
   compare: (a: TSelected, b: TSelected) => boolean = defaultCompare,
 ): TSelected {
-  const scope = React.useContext(routerStateScopeContext)
+  const ownerScope = React.useContext(routerStateScopeContext)
+  // Not conditional on anything that can change: whichever scope this reader
+  // resolves to, the hooks below run, in this order, on every render.
+  const scope =
+    ownerScope && ownerScope.router === router
+      ? ownerScope
+      : detachedScope(router)
 
-  if (!scope || scope.router !== router) {
-    if (isServer ?? router.isServer) {
-      return selector(router.stores.__store.get())
-    }
-    // The frame option is fixed when the router is created, so this branch
-    // cannot change hook order during the lifetime of a mounted router.
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    return useStore(router.stores.__store, selector, compare)
+  if (isServer ?? router.isServer) {
+    // One render, no reactivity, so nothing to subscribe to. `offeredFrame` is
+    // what the client path would resolve on its first render.
+    return selector(offeredFrame(scope))
   }
 
   // Which publication this consumer is presenting. It lives in React state, so
@@ -366,17 +405,38 @@ export function useRouterStateSelector<TSelected>(
     // Re-read the publication this consumer is already presenting, without
     // moving it onto another one. Used for every notification that is not an
     // offer, and when the subscription is installed.
+    // Whether the selection this consumer has on screen still holds for
+    // `frame`.
+    //
+    // A selector and a comparator are user code, and this runs them outside
+    // React's render — from the Router's `startTransition`, by way of
+    // `notify`. A throw here would reach neither an error boundary (there is
+    // no component on the stack) nor the consumer that owns the selector; it
+    // would unwind into whichever navigation sent the notification and wedge
+    // it. So a throwing selector is read as "the selection changed": this
+    // consumer re-renders, the selector throws during render instead, and the
+    // nearest error boundary handles it the way it would on the store path.
+    const stillHolds = (
+      onScreen: NonNullable<typeof committed.current>,
+      frame: RouterRenderFrame,
+    ) => {
+      try {
+        return onScreen.compare(onScreen.value, onScreen.selector(frame))
+      } catch {
+        return false
+      }
+    }
+
     const refresh = () => {
       const onScreen = committed.current
       if (!onScreen) {
         return
       }
-      setPresenting((previous) => {
-        const next = onScreen.selector(resolveFrame(scope, previous.frameId))
-        return onScreen.compare(onScreen.value, next)
+      setPresenting((previous) =>
+        stillHolds(onScreen, resolveFrame(scope, previous.frameId))
           ? previous
-          : { ...previous, revision: previous.revision + 1 }
-      })
+          : { ...previous, revision: previous.revision + 1 },
+      )
     }
 
     const unsubscribe = scope.subscribe((offered) => {
@@ -385,20 +445,13 @@ export function useRouterStateSelector<TSelected>(
         return
       }
       const onScreen = committed.current
-      if (!onScreen) {
-        setPresenting((previous) => ({
-          frameId: offered.frameId,
-          revision: previous.revision + 1,
-        }))
+      if (onScreen && stillHolds(onScreen, offered)) {
         return
       }
-      const next = onScreen.selector(offered)
-      if (!onScreen.compare(onScreen.value, next)) {
-        setPresenting((previous) => ({
-          frameId: offered.frameId,
-          revision: previous.revision + 1,
-        }))
-      }
+      setPresenting((previous) => ({
+        frameId: offered.frameId,
+        revision: previous.revision + 1,
+      }))
     })
 
     // A publication can land between this consumer's render and this effect —

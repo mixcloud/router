@@ -432,6 +432,7 @@ Two behaviour changes to know about before enabling it:
 
 - **Route-level pending components are not used after hydration.** Suspension consolidates at a single boundary around the route tree, so that a frame is published and acknowledged atomically. A child route that suspends bubbles to that boundary, whose fallback comes from the root route, so a child- or parent-specific `pendingComponent` is skipped. Provide progress UI outside the route tree, or from the route being left, using `status` and `isLoading`.
 - **`location` and `matches` lag the imperative head while a navigation is in flight**, by design: a component that renders during a navigation observes the route on screen rather than the one being prepared. `status` and `isLoading` are deliberately exempt, so progress UI still sees a navigation start and finish. An explicit `matchRoute({ pending: true })` also still resolves against the head, so destination-aware indicators keep working.
+- **Every reader goes through the frame path, including one that names a router explicitly.** `useRouterState({ router })` pointing at a router with no provider above it reads that router's store head — the same content as before — but through React state rather than `useSyncExternalStore`, so its updates are no longer flushed synchronously.
 
 ```tsx
 const router = createRouter({

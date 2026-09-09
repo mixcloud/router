@@ -780,3 +780,157 @@ describe('concurrent render frames', () => {
     expect(owners.at(-1)).toBe(first)
   })
 })
+
+/**
+ * Frame-path-only hazards: both are about the frame path's extra machinery,
+ * and neither has an analogue on the store path, so they are pinned once
+ * rather than through the mode matrix.
+ */
+describe('concurrent render frames', () => {
+  const makeRouter = () => {
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      component: () => <h1>Posts Title</h1>,
+    })
+    return createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+  }
+
+  /**
+   * `useRouterState({ router })` names a router explicitly, and that argument
+   * can change between renders. A reader whose hook shape depended on whether
+   * the named router matched the owner above it would not merely read the
+   * other router — it would crash on the hook order.
+   */
+  test('a consumer whose router argument changes keeps its hook order', async () => {
+    const first = makeRouter()
+    const second = makeRouter()
+
+    function Probe({ router }: { router: AnyRouter }) {
+      const pathname = useRouterState({
+        router,
+        select: (state) => state.location.pathname,
+      })
+      return <div data-testid="pathname">{pathname}</div>
+    }
+
+    // `second` has no owner above it here, so it resolves to a different scope
+    // than `first` does.
+    const { rerender } = render(
+      <RouterContextProvider router={first}>
+        <RouterStateProvider router={first}>
+          <Probe router={second} />
+        </RouterStateProvider>
+      </RouterContextProvider>,
+    )
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+
+    const swap = (router: AnyRouter) =>
+      rerender(
+        <RouterContextProvider router={first}>
+          <RouterStateProvider router={first}>
+            <Probe router={router} />
+          </RouterStateProvider>
+        </RouterContextProvider>,
+      )
+
+    // Onto the scoped router, and back off it: either direction changes hook
+    // order if the branch is taken per render.
+    swap(first)
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+    swap(second)
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+  })
+
+  /**
+   * A selector is user code, and the frame path runs it outside React's
+   * render — from the Router's `startTransition`, to decide whether a
+   * consumer's selection changed. A throw there reaches no error boundary and
+   * unwinds into the navigation that sent the notification.
+   */
+  test('a throwing selector surfaces in render rather than wedging the navigation', async () => {
+    const errors: Array<string> = []
+
+    class Boundary extends React.Component<
+      { children: React.ReactNode },
+      { failed: boolean }
+    > {
+      state = { failed: false }
+      static getDerivedStateFromError() {
+        return { failed: true }
+      }
+      componentDidCatch(error: Error) {
+        errors.push(error.message)
+      }
+      render() {
+        return this.state.failed ? (
+          <div data-testid="caught">caught</div>
+        ) : (
+          this.props.children
+        )
+      }
+    }
+
+    function Boom() {
+      const pathname = useRouterState({
+        select: (state) => {
+          if (state.location.pathname === '/posts') {
+            throw new Error('selector boom')
+          }
+          return state.location.pathname
+        },
+      })
+      return <div data-testid="pathname">{pathname}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Boundary>
+            <Boom />
+          </Boundary>
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      component: () => <h1>Posts Title</h1>,
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/posts' })
+    })
+
+    // The navigation completes, and the throw lands where a throwing selector
+    // lands on the store path: in the nearest error boundary.
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts Title' }))
+    await navigation
+    expect(router.stores.status.get()).toBe('idle')
+    await waitFor(() => screen.getByTestId('caught'))
+    expect(errors).toContain('selector boom')
+  })
+})
