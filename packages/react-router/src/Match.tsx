@@ -103,7 +103,14 @@ export const Match = React.memo(function MatchImpl({
     const match = useRouterStateSelector(router, (state) =>
       state.matches.find((candidate) => candidate.routeId === routeId),
     )
-    return <MatchView router={router} match={match!} />
+    // Same reasoning as `absentOutletMatchSelection`: a frame that drops this
+    // route can reach a consumer React has not unmounted yet. Rendering no
+    // match is correct for a subtree that is going away, and is safer than
+    // asserting a match the frame does not describe.
+    if (!match) {
+      return null
+    }
+    return <MatchView router={router} match={match} />
   }
 
   if (isServer ?? router.isServer) {

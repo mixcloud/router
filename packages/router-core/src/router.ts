@@ -2620,16 +2620,6 @@ export class RouterCore<
     TDefaultStructuralSharingOption,
     TRouterHistory
   > = (location, opts) => {
-    const matchLocation = {
-      ...location,
-      to: location.to
-        ? this.resolvePathWithBase(location.from || '', location.to as string)
-        : undefined,
-      params: location.params || {},
-      leaveParams: true,
-    }
-    const next = this.buildLocation(matchLocation as any)
-
     const presentedState = (
       opts as MatchRouteOptions & { _state?: RouterState }
     )?._state
@@ -2638,11 +2628,10 @@ export class RouterCore<
     // not about what this render is showing. It is answered from the head
     // whether or not a frame is presented, exactly as it always has been.
     // Everything else resolves against the frame being presented.
-    const isPending = (
-      opts?.pending
+    const isPending =
+      (opts?.pending
         ? this.stores.status.get()
-        : (presentedState?.status ?? this.stores.status.get())
-    ) === 'pending'
+        : (presentedState?.status ?? this.stores.status.get())) === 'pending'
     if (opts?.pending && !isPending) {
       return false
     }
@@ -2657,6 +2646,23 @@ export class RouterCore<
         : pending
           ? this.latestLocation
           : this.stores.resolvedLocation.get() || this.stores.location.get()
+
+    const matchLocation = {
+      ...location,
+      to: location.to
+        ? this.resolvePathWithBase(location.from || '', location.to as string)
+        : undefined,
+      params: location.params || {},
+      leaveParams: true,
+      // Build the target from the same publication it is about to be compared
+      // against. Otherwise a destination that omits `search` inherits it from
+      // the head while the comparison uses the presented frame, and a link to
+      // the route actually on screen reports itself inactive.
+      ...(presentedState && !opts?.pending
+        ? { _fromLocation: baseLocation }
+        : {}),
+    }
+    const next = this.buildLocation(matchLocation as any)
 
     const match = findSingleMatch(
       next.pathname,

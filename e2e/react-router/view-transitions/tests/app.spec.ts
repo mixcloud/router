@@ -12,6 +12,8 @@ type ViewTransitionRecord = {
 declare global {
   interface Window {
     __viewTransitions: Array<ViewTransitionRecord>
+    /** Whether this browser has the View Transitions API at all. */
+    __viewTransitionsSupported: boolean
   }
 }
 
@@ -27,6 +29,9 @@ async function recordViewTransitions(page: Page) {
   await page.addInitScript((knownTypes: Array<string>) => {
     window.__viewTransitions = []
     const original = document.startViewTransition?.bind(document)
+    // Recorded on the page rather than returned from `addInitScript`, which
+    // resolves to a handle for removing the script, not to the script's value.
+    window.__viewTransitionsSupported = Boolean(original)
     if (!original) {
       return
     }
@@ -54,6 +59,14 @@ async function recordViewTransitions(page: Page) {
 
 const getRecords = (page: Page) => page.evaluate(() => window.__viewTransitions)
 
+/**
+ * Without the API there is nothing to record, so the polls below would wait for
+ * records that can never arrive and fail on timeout. Skip instead: absent
+ * support is not a failing assertion about this change.
+ */
+const supportsViewTransitions = (page: Page) =>
+  page.evaluate(() => window.__viewTransitionsSupported)
+
 test.beforeEach(async ({ page }) => {
   await recordViewTransitions(page)
   await page.goto('/')
@@ -62,6 +75,11 @@ test.beforeEach(async ({ page }) => {
 test('a viewTransition navigation starts a real view transition', async ({
   page,
 }) => {
+  test.skip(
+    !(await supportsViewTransitions(page)),
+    'browser does not support document.startViewTransition',
+  )
+
   await page.getByRole('link', { name: 'Next Page' }).click()
   await expect(page.getByRole('heading')).toContainText(
     'This example demonstrates a variety of custom page transitions',
@@ -73,6 +91,11 @@ test('a viewTransition navigation starts a real view transition', async ({
 test('the transition pairs the shared element across the navigation', async ({
   page,
 }) => {
+  test.skip(
+    !(await supportsViewTransitions(page)),
+    'browser does not support document.startViewTransition',
+  )
+
   await page.getByRole('link', { name: 'Next Page' }).click()
 
   await expect
@@ -89,6 +112,11 @@ test('the transition pairs the shared element across the navigation', async ({
 test('the configured viewTransition types are applied to the document', async ({
   page,
 }) => {
+  test.skip(
+    !(await supportsViewTransitions(page)),
+    'browser does not support document.startViewTransition',
+  )
+
   const supportsTypes = await page.evaluate(() =>
     Boolean(
       window.CSS?.supports?.('selector(:active-view-transition-type(a))'),

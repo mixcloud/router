@@ -113,9 +113,7 @@ describe('render frames', () => {
     const presented = router.stores.__store.get()
 
     const navigation = router.navigate({ to: '/slow' })
-    await vi.waitFor(() =>
-      expect(router.stores.status.get()).toBe('pending'),
-    )
+    await vi.waitFor(() => expect(router.stores.status.get()).toBe('pending'))
 
     // `pending: true` asks about the navigation in flight. A destination-aware
     // indicator rendered by the route still on screen presents the older frame,
@@ -123,16 +121,68 @@ describe('render frames', () => {
     // before the commit, so resolving this against the presented frame would
     // mean it could never light up at all.
     expect(
-      router.matchRoute({ to: '/slow' } as any, {
-        _state: presented,
-        pending: true,
-      } as any),
+      router.matchRoute(
+        { to: '/slow' } as any,
+        {
+          _state: presented,
+          pending: true,
+        } as any,
+      ),
     ).toBeTruthy()
 
     // Ordinary matching still follows what is on screen.
     expect(
       router.matchRoute({ to: '/slow' } as any, { _state: presented } as any),
     ).toBe(false)
+
+    gate.resolve()
+    await navigation
+  })
+
+  test('a presented match target inherits search from the presented frame', async () => {
+    const gate = deferred()
+    const rootRoute = new BaseRootRoute({})
+    const postsRoute = new BaseRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      validateSearch: (search: Record<string, unknown>) => ({
+        tab: (search.tab as string | undefined) ?? 'a',
+      }),
+      // Only the second tab is slow, so the initial load settles and the
+      // navigation away can be held open.
+      loaderDeps: ({ search }: any) => ({ tab: search.tab }),
+      loader: ({ deps }: any) =>
+        deps.tab === 'b' ? gate.promise : Promise.resolve(),
+    })
+    const router = createTestRouter({
+      routeTree: rootRoute.addChildren([postsRoute]),
+      history: createMemoryHistory({ initialEntries: ['/posts?tab=a'] }),
+    })
+    await router.load()
+
+    // The frame the visible route is presenting: `/posts?tab=a`.
+    const presented = router.stores.__store.get()
+    expect(presented.location.search).toMatchObject({ tab: 'a' })
+
+    // Move the head to the same route with a different search, and hold it.
+    const navigation = router.navigate({ to: '/posts', search: { tab: 'b' } })
+    await vi.waitFor(() =>
+      expect(router.latestLocation.search).toMatchObject({ tab: 'b' }),
+    )
+
+    // A link to the route actually on screen that inherits the current search.
+    // The target has to inherit `tab` from the frame it will be compared
+    // against, not from the head — otherwise the visible route reports itself
+    // inactive. (A destination that simply omits `search` builds an empty
+    // search and compares partially, so only inheriting callers can see this.)
+    expect(
+      router.matchRoute(
+        { to: '/posts', search: true } as any,
+        {
+          _state: presented,
+        } as any,
+      ),
+    ).toBeTruthy()
 
     gate.resolve()
     await navigation
