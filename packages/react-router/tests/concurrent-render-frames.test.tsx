@@ -1169,6 +1169,7 @@ describe('concurrent render frames', () => {
     await waitFor(() => screen.getByRole('heading', { name: 'Second Title' }))
   })
 
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a

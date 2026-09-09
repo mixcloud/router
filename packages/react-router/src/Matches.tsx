@@ -58,7 +58,22 @@ declare module '@tanstack/router-core' {
 export function Matches() {
   const router = useRouter()
   const routerStateOwner = useRouterStateOwner()
-  const [renderFrame, setRenderFrame] = React.useState<RouterRenderFrame>()
+  // Tagged with the router that produced it. A router swapped under a mounted
+  // provider keeps its own navigation in flight, along with the
+  // `startTransition` override holding this dispatch, so its staged frame can
+  // still arrive here afterwards. Untagged it would mask the current router's
+  // own frame — and because `frameId` counts per router, a collision could
+  // commit the wrong router's snapshot outright.
+  const [queuedFrame, setQueuedFrame] = React.useState<
+    { router: AnyRouter; frame: RouterRenderFrame } | undefined
+  >()
+  const renderFrame =
+    queuedFrame?.router === router ? queuedFrame.frame : undefined
+  const setRenderFrame = React.useCallback(
+    (frame: RouterRenderFrame | undefined) =>
+      setQueuedFrame(frame ? { router, frame } : undefined),
+    [router],
+  )
   const activeFrame = renderFrame ?? routerStateOwner?.frame
   const rootRoute: AnyRoute = router.routesById[rootRouteId]
 
@@ -117,9 +132,7 @@ function MatchesInner({
 }: {
   activeFrame?: RouterRenderFrame
   renderFrame?: RouterRenderFrame
-  setRenderFrame: React.Dispatch<
-    React.SetStateAction<RouterRenderFrame | undefined>
-  >
+  setRenderFrame: (frame: RouterRenderFrame | undefined) => void
 }) {
   const router = useRouter()
   const routerStateOwner = useRouterStateOwner()

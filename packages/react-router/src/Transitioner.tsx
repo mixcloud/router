@@ -22,9 +22,7 @@ export function Transitioner({
   setRenderFrame,
 }: {
   t: React.Dispatch<React.SetStateAction<AnyRouter | undefined>>
-  setRenderFrame: React.Dispatch<
-    React.SetStateAction<RouterRenderFrame | undefined>
-  >
+  setRenderFrame: (frame: RouterRenderFrame | undefined) => void
 }) {
   const router = useRouter()
   const routerStateOwner = useRouterStateOwner()
