@@ -22,6 +22,7 @@ import {
 import { useForwardedRef, useIntersectionObserver } from './utils'
 
 import { useHydrated } from './ClientOnly'
+import type { RouterRenderFrame } from './routerStateContext'
 import type {
   ActiveOptions,
   AnyRouter,
@@ -39,20 +40,7 @@ import type {
 
 // Undefined active state marks an external or blocked link.
 // Keep that classification with the href instead of parsing it again on render.
-/**
- * `from` is the location the `href` was built against. Navigation and
- * preloading have to resolve against that same location, not whichever one the
- * router has reached since: with concurrent render frames a link rendered
- * against the visible route would otherwise navigate relative to the route
- * being prepared, so a functional `search` updater would build one location
- * for the href the user sees and another for the click that follows it.
- * `compareLinkState` ignores it, so it cannot cost a re-render.
- */
-type LinkState = [
-  href: string | undefined,
-  isActive?: boolean,
-  from?: ParsedLocation,
-]
+type LinkState = [href: string | undefined, isActive?: boolean]
 
 // Keep a referentially stable value while the contents are equal. Links
 // routinely pass inline `params` / `search` object literals, which would
@@ -470,7 +458,6 @@ export function useLinkProps<
               router.basepath,
               isHydrated,
             ),
-        location,
       ]
     },
     [stableActiveOptions, disabled, isHydrated, _options, router, to],
@@ -478,12 +465,25 @@ export function useLinkProps<
 
   // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   const frameMode = useFrameMode(router)
-  const [href, isActive, hrefFrom] = frameMode
+  // The publication this link is presenting, read at click time rather than
+  // captured in render. Navigation and preloading have to resolve against the
+  // location the href was built from — with concurrent render frames a link
+  // rendered against the visible route would otherwise navigate relative to
+  // the route being prepared — but a link whose href did not change does not
+  // re-render, so a value captured here would be from whichever navigation
+  // last moved it. `undefined` outside the frame path, where the router's own
+  // head is the right source and already fresh.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const presentedFrame = React.useRef<(() => RouterRenderFrame) | undefined>(
+    undefined,
+  )
+  const [href, isActive] = frameMode
     ? // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
       useRouterStateSelector(
         router,
         (state) => selectLinkState(state.location),
         compareLinkState,
+        presentedFrame,
       )
     : // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
       useStore(router.stores.location, selectLinkState, compareLinkState)
@@ -503,16 +503,19 @@ export function useLinkProps<
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const doPreload = React.useCallback(() => {
     // `preloadRoute` builds the location itself; it is no longer held in render
-    // state. It resolves against `hrefFrom` so it preloads the destination this
-    // link is displaying, and an explicit `_fromLocation` in the options still
-    // wins.
+    // state. It resolves against the publication this link is presenting, so
+    // it preloads the destination the link is displaying, and an explicit
+    // `_fromLocation` in the options still wins.
     router
-      .preloadRoute({ _fromLocation: hrefFrom, ..._options } as any)
+      .preloadRoute({
+        _fromLocation: presentedFrame.current?.().location,
+        ..._options,
+      } as any)
       .catch((err) => {
         console.warn(err)
         console.warn(preloadWarning)
       })
-  }, [router, _options, hrefFrom])
+  }, [router, _options])
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const enqueuePreload = React.useCallback(
@@ -624,7 +627,7 @@ export function useLinkProps<
       router.navigate({
         // Resolve against the location this link's href was built from, so the
         // click goes where the href says it does.
-        _fromLocation: hrefFrom,
+        _fromLocation: presentedFrame.current?.().location,
         ..._options,
         replace,
         resetScroll,

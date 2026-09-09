@@ -361,6 +361,19 @@ export function useRouterStateSelector<TSelected>(
   router: AnyRouter,
   selector: (state: RouterState<any>) => TSelected,
   compare: (a: TSelected, b: TSelected) => boolean = defaultCompare,
+  /**
+   * Filled with a getter for the publication this consumer is presenting, for
+   * a caller that needs it outside render — an event handler resolving against
+   * the route the user is looking at, say.
+   *
+   * It has to be a getter rather than a value: a consumer whose selection did
+   * not change does not re-render, so anything captured in render would be
+   * from whichever navigation last moved its selection. Reading at call time
+   * gives the staged publication while this consumer is presenting one, and
+   * the committed publication otherwise — which for a consumer that sat out a
+   * navigation is the route now on screen.
+   */
+  presentedFrame?: React.MutableRefObject<(() => RouterRenderFrame) | undefined>,
 ): TSelected {
   const ownerScope = React.useContext(routerStateScopeContext)
   // Not conditional on anything that can change: whichever scope this reader
@@ -386,6 +399,11 @@ export function useRouterStateSelector<TSelected>(
     frameId: offeredFrame(scope).frameId,
     revision: 0,
   }))
+  // The publication this consumer is presenting, for `presentedFrame` to read
+  // after the fact. Updated at commit, so it describes the tree on screen
+  // rather than a render that may yet be discarded.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const presentingRef = React.useRef(presenting)
   // What actually reached the screen: the selection, and the selector and
   // comparator that produced it. Kept together, because comparing a value from
   // one selector against a value from another is meaningless. Boxed so that a
@@ -413,7 +431,24 @@ export function useRouterStateSelector<TSelected>(
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useLayoutEffect(() => {
     committed.current = { value: rendered, selector, compare }
+    presentingRef.current = presenting
   })
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const getPresentedFrame = React.useCallback(
+    () => resolveFrame(scope, presentingRef.current.frameId),
+    [scope],
+  )
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useLayoutEffect(() => {
+    if (!presentedFrame) {
+      return
+    }
+    presentedFrame.current = getPresentedFrame
+    return () => {
+      presentedFrame.current = undefined
+    }
+  }, [getPresentedFrame, presentedFrame])
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useLayoutEffect(() => {

@@ -939,6 +939,71 @@ describe('concurrent render frames', () => {
     expect(router.stores.location.get().search).toEqual({ page: 2 })
   })
 
+
+  /**
+   * The other half of that: a link whose href does not change does not
+   * re-render, so anything its render captured is from whichever navigation
+   * last moved it. The location has to be read when the click happens.
+   */
+  test('a click resolves against the current location when the href never changed', async () => {
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Link
+            to="/posts"
+            search={{ page: 9 }}
+            state={(prev: any) => ({ from: prev.__TSR_index })}
+          >
+            Fixed target
+          </Link>
+          <Outlet />
+        </>
+      ),
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      validateSearch: (search: Record<string, unknown>) => ({
+        page: Number(search.page ?? 1),
+      }),
+      component: () => {
+        const page = postsRoute.useSearch({ select: (s) => s.page })
+        return <h1>{`Posts ${page}`}</h1>
+      },
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    window.history.replaceState(null, '', '/posts?page=1')
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 1' }))
+
+    const link = () => screen.getByRole('link', { name: 'Fixed target' })
+    // Static search, so this href is the same before and after the navigation
+    // below and the link has no reason to re-render.
+    expect(link()).toHaveAttribute('href', '/posts?page=9')
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/posts', search: { page: 2 } })
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 2' }))
+    await navigation
+    expect(link()).toHaveAttribute('href', '/posts?page=9')
+
+    const indexOnScreen = (router.stores.location.get().state as any).__TSR_index
+
+    act(() => {
+      fireEvent.click(link())
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 9' }))
+    // The updater ran against the location that was on screen when it was
+    // clicked, not the one the link last rendered against.
+    expect((router.stores.location.get().state as any).from).toBe(indexOnScreen)
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
