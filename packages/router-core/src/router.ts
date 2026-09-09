@@ -2638,11 +2638,14 @@ export class RouterCore<
 
     const pending = opts?.pending ?? !isPending
 
+    // A presented frame is matched against its own `location`: that is the
+    // route the calling render is showing, which is the whole point of passing
+    // a frame. Its `resolvedLocation` still names the previous route while a
+    // successor is staged but unacknowledged, so consulting it would report the
+    // destination inactive for exactly the render that is presenting it.
     const baseLocation =
       presentedState && !opts?.pending
-        ? pending
-          ? presentedState.location
-          : presentedState.resolvedLocation || presentedState.location
+        ? presentedState.location
         : pending
           ? this.latestLocation
           : this.stores.resolvedLocation.get() || this.stores.location.get()

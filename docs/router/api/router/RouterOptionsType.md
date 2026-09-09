@@ -418,3 +418,24 @@ If you want to configure to remount all route components upon `params` change, u
 ```tsx
 remountDeps: ({ params }) => params
 ```
+
+### `experimental_concurrentRenderFrames` property
+
+- Type: `boolean`
+- Optional
+- Defaults to `false`
+- **Experimental.** When `true`, the React adapter publishes router state to React as one immutable _render frame_ per navigation, instead of through the individual store subscriptions that `useSyncExternalStore` backs.
+- Enable it if you need React's `<ViewTransition>` — or any other transition-only behaviour — to engage across a navigation. Router state otherwise reaches components through `useSyncExternalStore`, which React schedules at a synchronous lane from the store's own subscription callback, after the `startTransition` scope has exited. That update is therefore never a transition, and `<ViewTransition>` only runs for transitions.
+- Selector behaviour is unchanged: a consumer re-renders only when its own selection changes.
+
+Two behaviour changes to know about before enabling it:
+
+- **Route-level pending components are not used after hydration.** Suspension consolidates at a single boundary around the route tree, so that a frame is published and acknowledged atomically. A child route that suspends bubbles to that boundary, whose fallback comes from the root route, so a child- or parent-specific `pendingComponent` is skipped. Provide progress UI outside the route tree, or from the route being left, using `status` and `isLoading`.
+- **`location` and `matches` lag the imperative head while a navigation is in flight**, by design: a component that renders during a navigation observes the route on screen rather than the one being prepared. `status` and `isLoading` are deliberately exempt, so progress UI still sees a navigation start and finish. An explicit `matchRoute({ pending: true })` also still resolves against the head, so destination-aware indicators keep working.
+
+```tsx
+const router = createRouter({
+  routeTree,
+  experimental_concurrentRenderFrames: true,
+})
+```

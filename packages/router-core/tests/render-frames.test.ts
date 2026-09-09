@@ -187,4 +187,44 @@ describe('render frames', () => {
     gate.resolve()
     await navigation
   })
+
+
+  test('a staged frame matches its own destination before acknowledgement', async () => {
+    const gate = deferred()
+    const rootRoute = new BaseRootRoute({})
+    const indexRoute = new BaseRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+    })
+    const nextRoute = new BaseRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      loader: () => gate.promise,
+    })
+    const router = createTestRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    await router.load()
+
+    const navigation = router.navigate({ to: '/next' })
+    await vi.waitFor(() =>
+      expect(router.latestLocation.pathname).toBe('/next'),
+    )
+
+    // The successor as a render would present it: its own location is the
+    // destination, while `resolvedLocation` still names the route being left.
+    const staged = router.stores.__store.get()
+    expect(staged.location.pathname).toBe('/next')
+
+    // A destination-aware `useMatchRoute` in the successor tree renders before
+    // acknowledgement. Matching against the frame's stale `resolvedLocation`
+    // would report the very route it is presenting as inactive.
+    expect(
+      router.matchRoute({ to: '/next' } as any, { _state: staged } as any),
+    ).toBeTruthy()
+
+    gate.resolve()
+    await navigation
+  })
 })

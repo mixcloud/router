@@ -342,7 +342,9 @@ export const Outlet = React.memo(function OutletImpl() {
             (match) => match.routeId === routeId,
           )
           const parentMatch = matches[parentIndex]
-          if (!parentMatch) return absentOutletMatchSelection
+          if (!parentMatch) {
+            return absentOutletMatchSelection
+          }
           return [
             !!parentMatch._notFound,
             parentMatch.error,
