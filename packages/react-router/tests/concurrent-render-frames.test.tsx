@@ -18,6 +18,7 @@ import {
   Outlet,
   RouterContextProvider,
   RouterProvider,
+  createMemoryHistory,
   createRootRoute,
   createRoute,
   createRouter,
@@ -788,7 +789,7 @@ describe('concurrent render frames', () => {
  * rather than through the mode matrix.
  */
 describe('concurrent render frames', () => {
-  const makeRouter = (frames = true) => {
+  const makeRouter = (frames = true, initialPath?: string) => {
     const rootRoute = createRootRoute({ component: () => <Outlet /> })
     const indexRoute = createRoute({
       getParentRoute: () => rootRoute,
@@ -803,6 +804,13 @@ describe('concurrent render frames', () => {
     return createRouter({
       routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
       experimental_concurrentRenderFrames: frames,
+      // A memory history where a distinct starting location is wanted: both
+      // routers would otherwise read the same browser history and agree,
+      // which would hide a reader following the owner instead of the router
+      // it was handed.
+      ...(initialPath
+        ? { history: createMemoryHistory({ initialEntries: [initialPath] }) }
+        : {}),
     })
   }
 
@@ -814,7 +822,8 @@ describe('concurrent render frames', () => {
    */
   test('a consumer whose router argument changes keeps its hook order', async () => {
     const first = makeRouter()
-    const second = makeRouter()
+    // Starts somewhere else, so the assertions say *which* router was read.
+    const second = makeRouter(true, '/posts')
     // Configured the other way, so the swap crosses the option itself and not
     // just scope identity.
     const plain = makeRouter(false)
@@ -828,7 +837,8 @@ describe('concurrent render frames', () => {
     }
 
     // `second` has no owner above it here, so it resolves to a different scope
-    // than `first` does.
+    // than `first` does — and it is at `/posts`, so this also pins that the
+    // reader followed the router it was handed rather than the owner above it.
     const { rerender } = render(
       <RouterContextProvider router={first}>
         <RouterStateProvider router={first}>
@@ -836,7 +846,7 @@ describe('concurrent render frames', () => {
         </RouterStateProvider>
       </RouterContextProvider>,
     )
-    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/posts')
 
     const swap = (router: AnyRouter) =>
       rerender(
@@ -852,7 +862,7 @@ describe('concurrent render frames', () => {
     swap(first)
     expect(screen.getByTestId('pathname')).toHaveTextContent('/')
     swap(second)
-    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/posts')
     // And onto a router that is not on the frame path at all, which decides
     // the branch above `useRouterStateSelector` rather than inside it.
     swap(plain)

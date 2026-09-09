@@ -395,11 +395,32 @@ export function useRouterStateSelector<TSelected>(
   // publication without the still-visible tree following it there. `revision`
   // makes every accepted update a distinct state value, so a progress-only
   // change — same frame, new status — still re-renders.
+  //
+  // The scope is part of it because `frameId` only means anything within one:
+  // a different router counts frames from its own start, so an identity
+  // carried over could collide and read as this consumer having accepted a
+  // frame it was never offered. A scope change starts the identity over —
+  // rebased rather than reset, so `revision` stays monotonic and a pending
+  // update cannot land on a value React considers unchanged.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [presenting, setPresenting] = React.useState(() => ({
+  const [stored, setPresenting] = React.useState(() => ({
+    scope,
     frameId: offeredFrame(scope).frameId,
     revision: 0,
   }))
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const rebase = React.useCallback(
+    (previous: { scope: RouterStateScope; frameId: number; revision: number }) =>
+      previous.scope === scope
+        ? previous
+        : {
+            scope,
+            frameId: offeredFrame(scope).frameId,
+            revision: previous.revision,
+          },
+    [scope],
+  )
+  const presenting = rebase(stored)
   // The publication this consumer is presenting, for `presentedFrame` to read
   // after the fact. Updated at commit, so it describes the tree on screen
   // rather than a render that may yet be discarded.
@@ -499,16 +520,24 @@ export function useRouterStateSelector<TSelected>(
       }
     }
 
+    // Decided here rather than inside the updater: `stillHolds` runs user code
+    // and borrows the selector's cache, and React may call an updater more than
+    // once — twice in Strict Mode — so a side-effecting one would run the
+    // selector more often than there were notifications. It also has to answer
+    // for the publication this notification described, which an updater
+    // running later might not resolve to.
     const refresh = () => {
       const onScreen = committed.current
       if (!onScreen) {
         return
       }
-      setPresenting((previous) =>
-        stillHolds(onScreen, resolveFrame(scope, previous.frameId))
-          ? previous
-          : { ...previous, revision: previous.revision + 1 },
-      )
+      if (stillHolds(onScreen, resolveFrame(scope, presentingRef.current.frameId))) {
+        return
+      }
+      setPresenting((previous) => {
+        const base = rebase(previous)
+        return { ...base, revision: base.revision + 1 }
+      })
     }
 
     const unsubscribe = scope.subscribe((offered) => {
@@ -521,8 +550,9 @@ export function useRouterStateSelector<TSelected>(
         return
       }
       setPresenting((previous) => ({
+        scope,
         frameId: offered.frameId,
-        revision: previous.revision + 1,
+        revision: rebase(previous).revision + 1,
       }))
     })
 
@@ -533,7 +563,7 @@ export function useRouterStateSelector<TSelected>(
     refresh()
 
     return unsubscribe
-  }, [scope])
+  }, [rebase, scope])
 
   return rendered
 }
