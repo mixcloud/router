@@ -851,6 +851,85 @@ describe('concurrent render frames', () => {
     expect(screen.getByTestId('pathname')).toHaveTextContent('/')
   })
 
+
+  /**
+   * A link's `href` is built from the location it is rendered against, which
+   * on the frame path is the one on screen rather than the router's head. The
+   * click has to resolve against that same location, or a functional `search`
+   * updater sends the user somewhere other than where the href they saw
+   * pointed.
+   */
+  test('a click resolves against the location the href was built from', async () => {
+    const gate = deferred()
+    let loads = 0
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Link
+            to="/posts"
+            search={(prev: any) => ({ page: (prev.page ?? 1) + 1 })}
+          >
+            Next page
+          </Link>
+          <Outlet />
+        </>
+      ),
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      validateSearch: (search: Record<string, unknown>) => ({
+        page: Number(search.page ?? 1),
+      }),
+      // The search is part of the loader key, so each page really loads.
+      loaderDeps: ({ search }: { search: { page: number } }) => ({
+        page: search.page,
+      }),
+      // Every load after the first one hangs until the test lets it through,
+      // which is the window in which the visible route and the head disagree.
+      loader: async () => {
+        loads++
+        if (loads > 1) {
+          await gate.promise
+        }
+      },
+      component: () => {
+        const page = postsRoute.useSearch({ select: (s) => s.page })
+        return <h1>{`Posts ${page}`}</h1>
+      },
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    window.history.replaceState(null, '', '/posts?page=1')
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 1' }))
+
+    const link = () => screen.getByRole('link', { name: 'Next page' })
+    expect(link()).toHaveAttribute('href', '/posts?page=2')
+
+    // Head moves to page 5 and stays pending, so the head and the visible
+    // route disagree about what "the next page" is.
+    act(() => {
+      void router.navigate({ to: '/posts', search: { page: 5 } })
+    })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    screen.getByRole('heading', { name: 'Posts 1' })
+    expect(link()).toHaveAttribute('href', '/posts?page=2')
+
+    act(() => {
+      fireEvent.click(link())
+    })
+    gate.resolve()
+
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 2' }))
+    expect(router.stores.location.get().search).toEqual({ page: 2 })
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a

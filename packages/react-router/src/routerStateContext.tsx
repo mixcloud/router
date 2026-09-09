@@ -364,11 +364,6 @@ export function useRouterStateSelector<TSelected>(
     frameId: offeredFrame(scope).frameId,
     revision: 0,
   }))
-  // The selection for the render currently executing. A render can be
-  // discarded — suspended, interrupted, or superseded — so this is
-  // work in progress, not necessarily what anyone can see.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const rendered = React.useRef<TSelected>(undefined as TSelected)
   // What actually reached the screen: the selection, and the selector and
   // comparator that produced it. Kept together, because comparing a value from
   // one selector against a value from another is meaningless. Boxed so that a
@@ -383,11 +378,19 @@ export function useRouterStateSelector<TSelected>(
     | undefined
   >(undefined)
 
-  rendered.current = selector(resolveFrame(scope, presenting.frameId))
+  // The selection for the render currently executing. A render can be
+  // discarded — suspended, interrupted, or superseded — so this is work in
+  // progress, not necessarily what anyone can see; it is a plain local, and
+  // the effect below closes over it, so each render carries its own. Holding
+  // it in a ref instead would let a later render overwrite it before an
+  // earlier one commits, and the earlier tree's effect would then record a
+  // selection that was never on its screen — enough to skip a re-render it
+  // needed.
+  const rendered = selector(resolveFrame(scope, presenting.frameId))
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useLayoutEffect(() => {
-    committed.current = { value: rendered.current, selector, compare }
+    committed.current = { value: rendered, selector, compare }
   })
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -463,7 +466,7 @@ export function useRouterStateSelector<TSelected>(
     return unsubscribe
   }, [scope])
 
-  return rendered.current
+  return rendered
 }
 
 /**

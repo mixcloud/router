@@ -36,7 +36,20 @@ import type {
 
 // Undefined active state marks an external or blocked link.
 // Keep that classification with the href instead of parsing it again on render.
-type LinkState = [href: string | undefined, isActive?: boolean]
+/**
+ * `from` is the location the `href` was built against. Navigation and
+ * preloading have to resolve against that same location, not whichever one the
+ * router has reached since: with concurrent render frames a link rendered
+ * against the visible route would otherwise navigate relative to the route
+ * being prepared, so a functional `search` updater would build one location
+ * for the href the user sees and another for the click that follows it.
+ * `compareLinkState` ignores it, so it cannot cost a re-render.
+ */
+type LinkState = [
+  href: string | undefined,
+  isActive?: boolean,
+  from?: ParsedLocation,
+]
 
 // Keep a referentially stable value while the contents are equal. Links
 // routinely pass inline `params` / `search` object literals, which would
@@ -454,12 +467,14 @@ export function useLinkProps<
               router.basepath,
               isHydrated,
             ),
+        location,
       ]
     },
     [stableActiveOptions, disabled, isHydrated, _options, router, to],
   )
 
-  const [href, isActive] = router.options.experimental_concurrentRenderFrames
+  const [href, isActive, hrefFrom] = router.options
+    .experimental_concurrentRenderFrames
     ? // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
       useRouterStateSelector(
         router,
@@ -484,12 +499,16 @@ export function useLinkProps<
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const doPreload = React.useCallback(() => {
     // `preloadRoute` builds the location itself; it is no longer held in render
-    // state. It only reads the options, so `_options` can go through as-is.
-    router.preloadRoute(_options as any).catch((err) => {
-      console.warn(err)
-      console.warn(preloadWarning)
-    })
-  }, [router, _options])
+    // state. It resolves against `hrefFrom` so it preloads the destination this
+    // link is displaying, and an explicit `_fromLocation` in the options still
+    // wins.
+    router
+      .preloadRoute({ _fromLocation: hrefFrom, ..._options } as any)
+      .catch((err) => {
+        console.warn(err)
+        console.warn(preloadWarning)
+      })
+  }, [router, _options, hrefFrom])
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const enqueuePreload = React.useCallback(
@@ -599,6 +618,9 @@ export function useLinkProps<
       // All is well? Navigate!
       // N.B. we don't call `router.commitLocation(next) here because we want to run `validateSearch` before committing
       router.navigate({
+        // Resolve against the location this link's href was built from, so the
+        // click goes where the href says it does.
+        _fromLocation: hrefFrom,
         ..._options,
         replace,
         resetScroll,
