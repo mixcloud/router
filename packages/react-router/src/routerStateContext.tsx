@@ -335,6 +335,28 @@ function detachedScope(router: AnyRouter): RouterStateScope {
   return scope
 }
 
+/**
+ * Whether this component reads through the frame path, decided once.
+ *
+ * The option gates which hooks a reader calls, and the router a component
+ * reads is not fixed: `useRouterState({ router })` takes one as an option,
+ * and a provider can be re-rendered with another. If the answer changed under
+ * a mounted component, its hook sequence would change with it and React would
+ * fail on the hook order rather than merely read the other router. So it is
+ * frozen at first render, and every branch on the option goes through this.
+ *
+ * A reader frozen on the frame path but later handed a router with no owner
+ * resolves to that router's store head; one frozen on the store path reads
+ * the head directly. Either way it reads the right router's state — it just
+ * keeps the isolation behaviour it mounted with.
+ */
+export function useFrameMode(router: AnyRouter): boolean {
+  const [mode] = React.useState(() =>
+    Boolean(router.options.experimental_concurrentRenderFrames),
+  )
+  return mode
+}
+
 export function useRouterStateSelector<TSelected>(
   router: AnyRouter,
   selector: (state: RouterState<any>) => TSelected,
@@ -481,7 +503,7 @@ export function useFrameRootBoundary(
   router: AnyRouter,
   isServerRender: boolean,
 ): boolean {
-  if (!router.options.experimental_concurrentRenderFrames) {
+  if (!useFrameMode(router)) {
     return false
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks

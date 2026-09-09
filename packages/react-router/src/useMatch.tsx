@@ -6,7 +6,10 @@ import { invariant, replaceEqualDeep } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { dummyMatchContext, matchContext } from './matchContext'
 import { useRouter } from './useRouter'
-import { useRouterStateSelector } from './routerStateContext'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   StructuralSharingOption,
   ValidateSelected,
@@ -151,7 +154,7 @@ export function useMatch<
   const routeId = opts.from ?? nearestRouteId
   const matchStore = router.stores.getMatchStore(routeId!)
 
-  if (!router.options.experimental_concurrentRenderFrames) {
+  if (!useFrameMode(router)) {
     if (isServer ?? router.isServer) {
       const match = matchStore.get()
       if (!match) {
@@ -171,9 +174,9 @@ export function useMatch<
       return (opts.select ? opts.select(match as any) : match) as any
     }
 
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const selector = useStructuralSharing(opts, router)
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const matchSelection = useStore(matchStore, (match) =>
       match ? selector(match as any) : dummyMatch,
     )
@@ -182,9 +185,9 @@ export function useMatch<
       return matchSelection as any
     }
   } else {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const selector = useStructuralSharing(opts, router)
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const matchSelection = useRouterStateSelector(router, (state) => {
       const match = state.matches.find(
         (candidate) => candidate.routeId === routeId,

@@ -787,7 +787,7 @@ describe('concurrent render frames', () => {
  * rather than through the mode matrix.
  */
 describe('concurrent render frames', () => {
-  const makeRouter = () => {
+  const makeRouter = (frames = true) => {
     const rootRoute = createRootRoute({ component: () => <Outlet /> })
     const indexRoute = createRoute({
       getParentRoute: () => rootRoute,
@@ -801,7 +801,7 @@ describe('concurrent render frames', () => {
     })
     return createRouter({
       routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
-      experimental_concurrentRenderFrames: true,
+      experimental_concurrentRenderFrames: frames,
     })
   }
 
@@ -814,6 +814,9 @@ describe('concurrent render frames', () => {
   test('a consumer whose router argument changes keeps its hook order', async () => {
     const first = makeRouter()
     const second = makeRouter()
+    // Configured the other way, so the swap crosses the option itself and not
+    // just scope identity.
+    const plain = makeRouter(false)
 
     function Probe({ router }: { router: AnyRouter }) {
       const pathname = useRouterState({
@@ -848,6 +851,12 @@ describe('concurrent render frames', () => {
     swap(first)
     expect(screen.getByTestId('pathname')).toHaveTextContent('/')
     swap(second)
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+    // And onto a router that is not on the frame path at all, which decides
+    // the branch above `useRouterStateSelector` rather than inside it.
+    swap(plain)
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+    swap(first)
     expect(screen.getByTestId('pathname')).toHaveTextContent('/')
   })
 

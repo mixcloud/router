@@ -1,13 +1,16 @@
 import { useStore } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
-import { useRouterStateSelector } from './routerStateContext'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 
 export function useCanGoBack() {
   const router = useRouter()
 
-  if (router.options.experimental_concurrentRenderFrames) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     return useRouterStateSelector(
       router,
       (state) => state.location.state.__TSR_index !== 0,

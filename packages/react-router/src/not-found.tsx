@@ -4,7 +4,10 @@ import { isServer } from '@tanstack/router-core/isServer'
 import { useStore } from '@tanstack/react-store'
 import { CatchBoundary } from './CatchBoundary'
 import { useRouter } from './useRouter'
-import { useRouterStateSelector } from './routerStateContext'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type { ErrorInfo } from 'react'
 import type { NotFoundError } from '@tanstack/router-core'
 
@@ -16,8 +19,8 @@ export function CatchNotFound(props: {
   const router = useRouter()
   let pathname: string
   let status: 'pending' | 'idle'
-  if (router.options.experimental_concurrentRenderFrames) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     ;[pathname, status] = useRouterStateSelector(
       router,
       (state) => [state.location.pathname, state.status] as const,

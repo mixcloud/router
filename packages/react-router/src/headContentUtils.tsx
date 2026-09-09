@@ -11,7 +11,10 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
-import { useRouterStateSelector } from './routerStateContext'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   AnyRouteMatch,
   AssetCrossOriginConfig,
@@ -202,8 +205,8 @@ export const useTags = (assetCrossOrigin?: AssetCrossOriginConfig) => {
       buildTagsFromMatches(router, nonce, matches, assetCrossOrigin),
     [assetCrossOrigin, nonce, router],
   )
-  if (router.options.experimental_concurrentRenderFrames) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     return useRouterStateSelector(
       router,
       (state) => selectTags(state.matches),

@@ -4,7 +4,10 @@ import * as React from 'react'
 import { hasKeys } from '@tanstack/router-core'
 import { Matches } from './Matches'
 import { routerContext } from './routerContext'
-import { RouterStateProvider } from './routerStateContext'
+import {
+  RouterStateProvider,
+  useFrameMode,
+} from './routerStateContext'
 import type {
   AnyRouter,
   RegisteredRouter,
@@ -37,8 +40,9 @@ export function RouterContextProvider<
     })
   }
 
-  const childrenWithState = router.options
-    .experimental_concurrentRenderFrames ? (
+  // Frozen, like every other branch on the option: swapping the router for
+  // one configured differently must not unmount the whole tree.
+  const childrenWithState = useFrameMode(router as AnyRouter) ? (
     <RouterStateProvider router={router}>{children}</RouterStateProvider>
   ) : (
     children

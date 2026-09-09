@@ -14,6 +14,7 @@ import { Match, renderPending } from './Match'
 import { SafeFragment } from './SafeFragment'
 import {
   RouterStateFrame,
+  useFrameMode,
   useFrameRootBoundary,
   useRouterStateOwner,
   useRouterStateSelector,
@@ -122,10 +123,9 @@ function MatchesInner({
   const router = useRouter()
   const routerStateOwner = useRouterStateOwner()
   const acknowledgement = router._rendered!
+  const frameMode = useFrameMode(router)
   let matches: Array<AnyRouteMatch>
-  if (router.options.experimental_concurrentRenderFrames) {
-    // The option is fixed for the mounted router, so this branch cannot change
-    // hook order during the component's lifetime.
+  if (frameMode) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     matches = useRouterStateSelector(router, (state) => state.matches)
   } else if (isServer ?? router.isServer) {
@@ -142,7 +142,7 @@ function MatchesInner({
   const routeId = match?.routeId
 
   useLayoutEffect(() => {
-    const acknowledged = router.options.experimental_concurrentRenderFrames
+    const acknowledged = frameMode
       ? acknowledgement[0 /* offered */] === activeFrame?.frameId
       : acknowledgement[0 /* offered */] === matches
     if (acknowledged) {
@@ -154,9 +154,9 @@ function MatchesInner({
   }, [
     acknowledgement,
     activeFrame,
+    frameMode,
     matches,
     renderFrame,
-    router.options.experimental_concurrentRenderFrames,
     routerStateOwner,
     setRenderFrame,
   ])
@@ -238,9 +238,8 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
     }
   }
 
-  if (router.options.experimental_concurrentRenderFrames) {
-    // The option is fixed for the mounted router, so this branch cannot change
-    // hook order during the component's lifetime.
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const state = useRouterStateSelector(router, (frameState) => frameState)
     // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -355,9 +354,7 @@ export function useMatches<
 ): UseMatchesResult<TRouter, TSelected> {
   const router = useRouter<TRouter>()
 
-  if (router.options.experimental_concurrentRenderFrames) {
-    // The option is fixed for the mounted router, so this branch cannot change
-    // hook order during the component's lifetime.
+  if (useFrameMode(router)) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const selectMatches = useStructuralSharing(opts, router)
     // eslint-disable-next-line react-hooks/rules-of-hooks

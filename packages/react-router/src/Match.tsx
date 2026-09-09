@@ -13,6 +13,7 @@ import { renderRouteNotFound } from './renderRouteNotFound'
 import { ScrollRestoration } from './scroll-restoration'
 import { ClientOnly } from './ClientOnly'
 import {
+  useFrameMode,
   useFrameRootBoundary,
   useRouterStateSelector,
 } from './routerStateContext'
@@ -96,9 +97,7 @@ export const Match = React.memo(function MatchImpl({
   routeId: string
 }) {
   const router = useRouter()
-  if (router.options.experimental_concurrentRenderFrames) {
-    // The option is fixed for the mounted router, so this branch cannot change
-    // hook order during the component's lifetime.
+  if (useFrameMode(router)) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const match = useRouterStateSelector(router, (state) =>
       state.matches.find((candidate) => candidate.routeId === routeId),
@@ -329,9 +328,8 @@ export const Outlet = React.memo(function OutletImpl() {
   let parentNotFoundError: unknown
   let childRouteId: string | undefined
 
-  if (router.options.experimental_concurrentRenderFrames) {
-    // The option is fixed for the mounted router, so this branch cannot change
-    // hook order during the component's lifetime.
+  const frameMode = useFrameMode(router)
+  if (frameMode) {
     ;[parentGlobalNotFound, parentNotFoundError, childRouteId] =
       // eslint-disable-next-line react-hooks/rules-of-hooks
       useRouterStateSelector(
@@ -391,10 +389,7 @@ export const Outlet = React.memo(function OutletImpl() {
   const nextMatch = <Match routeId={childRouteId} />
 
   // Matches owns the experiment's single acknowledgement boundary.
-  if (
-    routeId === rootRouteId &&
-    !router.options.experimental_concurrentRenderFrames
-  ) {
+  if (routeId === rootRouteId && !frameMode) {
     return (
       <React.Suspense fallback={renderPending(router)}>
         {nextMatch}

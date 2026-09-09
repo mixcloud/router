@@ -4,7 +4,10 @@ import { useStore } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
 import { useStructuralSharing } from './useMatch'
-import { useRouterStateSelector } from './routerStateContext'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   AnyRouter,
   RegisteredRouter,
@@ -55,11 +58,11 @@ export function useRouterState<
   })
   const router = opts?.router || contextRouter
 
-  if (router.options.experimental_concurrentRenderFrames) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     return useRouterStateSelector(
       router,
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- option is static
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
       useStructuralSharing(opts, router),
     ) as UseRouterStateResult<TRouter, TSelected>
   }
