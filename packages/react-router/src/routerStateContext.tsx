@@ -211,8 +211,18 @@ function createOwner(router: AnyRouter): RouterStateOwner {
       pending = undefined
       // The staged publication is now what everyone has committed, so the
       // staged slot empties and both scopes resolve to it.
-      root.committed = nextFrame
-      route.committed = nextFrame
+      //
+      // Progress comes from the head rather than from the frame, because a
+      // newer navigation may already be loading by the time this one commits.
+      // Committing the frame's own `status`/`isLoading` would replace that
+      // navigation's overlay with a stale idle snapshot, and it may emit
+      // nothing further until it finishes — leaving progress false throughout.
+      const committedFrame = withProgress(
+        nextFrame,
+        router.stores.__store.get(),
+      )
+      root.committed = committedFrame
+      route.committed = committedFrame
       route.staged = undefined
       root.notify()
       route.notify()
