@@ -38,6 +38,17 @@ const router = createRouter({
   //     return [`slide-${direction}`]
   //   },
   // },
+
+  // Run this fixture on the render-frame path, so its tests act as a
+  // regression guard that the option does not break `viewTransition: true`.
+  //
+  // They do not, and cannot, prove the option's own behaviour: they assert on
+  // `document.startViewTransition`, which `viewTransition: true` calls
+  // directly, and they pass with the option either way (verified). React's
+  // `<ViewTransition>` — what the option actually unblocks — is canary-only,
+  // so it cannot be exercised on the React version this repo pins. The unit
+  // tests cover the protocol; see the PR for the measured evidence.
+  experimental_concurrentRenderFrames: true,
 })
 
 // Register things for typesafety
