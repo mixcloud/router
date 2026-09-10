@@ -3,7 +3,6 @@
 import * as React from 'react'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useLayoutEffect } from './utils'
-import { useHydrated } from './ClientOnly'
 import type { AnyRouter, RouterState } from '@tanstack/router-core'
 import type { CacheableSelector } from './useMatch'
 
@@ -571,20 +570,24 @@ export function useRouterStateSelector<TSelected>(
 /**
  * Whether this render should consolidate route suspension at the frame root.
  *
- * Only the frame path asks, so `useHydrated` is never subscribed to on the
- * default path. Within the frame branch the hook is unconditional, and the
- * branch itself depends only on the option, which is fixed when the router is
- * created.
+ * Answered from the option and whether the app renders on the server, both
+ * fixed for the tree's lifetime — deliberately, because this decides an
+ * element *type*. It first followed hydration, which meant the wrapper at the
+ * root of the route tree changed from a fragment to a `Suspense` boundary the
+ * moment hydration finished: React reads a changed type as a replacement, so
+ * the whole route subtree unmounted and remounted, re-running mount effects
+ * and discarding anything a component had set up while hydrating.
+ *
+ * A server-rendered app therefore does not consolidate at all. It keeps
+ * upstream's route-level boundaries, which is what its streamed HTML already
+ * describes, and gives up atomic acknowledgement: a child that suspends
+ * resolves at its own boundary, so a frame can be acknowledged while part of
+ * the tree is still pending. That is upstream's behaviour today, and a far
+ * better trade than remounting the route tree once per page load.
  */
 export function useFrameRootBoundary(
   router: AnyRouter,
   isServerRender: boolean,
 ): boolean {
-  if (!useFrameMode(router)) {
-    return false
-  }
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const hydrated = useHydrated()
-  const isHydrating = Boolean(router.ssr) && !hydrated
-  return !isServerRender && !isHydrating
+  return useFrameMode(router) && !isServerRender && !router.ssr
 }
