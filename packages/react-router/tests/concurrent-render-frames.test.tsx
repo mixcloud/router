@@ -474,6 +474,100 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
     expect(screen.getByTestId('back')).toHaveTextContent('true')
     expect(seen).toContain(true)
   })
+
+  /**
+   * A same-location refresh is not a supersession, and the frame path presents
+   * exactly what the store path does.
+   *
+   * `isSuperseded` compares the location and the history entry, so two
+   * overlapping `invalidate()` calls for the same entry look identical to it —
+   * raised in review as a case where a suspended refresh frame could commit
+   * behind a successor that is still loading. It can, and that is the same
+   * content the store path shows at the same moment: the first refresh's data
+   * is the freshest that exists, the successor has produced nothing yet, and
+   * refusing the frame would put back content older than what has already been
+   * rendered. Asserted on both paths so the parity is the contract rather than
+   * an observation.
+   */
+  test('overlapping refreshes of one location present the same sequence as the store path', async () => {
+    const firstRefresh = deferred<string>()
+    const secondRefresh = deferred<string>()
+    const resume = deferred()
+    let generation = 0
+    let resumed = false
+    resume.promise.then(() => {
+      resumed = true
+    })
+    const presented: Array<string> = []
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      loader: () => {
+        const load = generation++
+        return load === 0
+          ? '1'
+          : load === 1
+            ? firstRefresh.promise
+            : secondRefresh.promise
+      },
+      component: function IndexComponent() {
+        const data = indexRoute.useLoaderData()
+        // The first refresh's tree suspends, so its frame is staged and
+        // rendered but cannot be acknowledged until `resume` resolves.
+        if (data === '2' && !resumed) {
+          throw resume.promise
+        }
+        presented.push(data)
+        return <div data-testid="data">{data}</div>
+      },
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() =>
+      expect(screen.getByTestId('data')).toHaveTextContent('1'),
+    )
+
+    // The first refresh's data arrives; its tree suspends on it.
+    const first = router.invalidate()
+    first.catch(() => {})
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    firstRefresh.resolve('2')
+    await act(async () => {
+      await firstRefresh.promise
+    })
+    expect(screen.getByTestId('data')).toHaveTextContent('1')
+
+    // A second refresh of the same entry starts, and is still loading when
+    // the suspended tree resumes.
+    const second = router.invalidate()
+    second.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+    })
+    resume.resolve()
+    await act(async () => {
+      await resume.promise
+    })
+    expect(screen.getByTestId('data')).toHaveTextContent('2')
+
+    secondRefresh.resolve('3')
+    await act(async () => {
+      await secondRefresh.promise
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('data')).toHaveTextContent('3'),
+    )
+
+    // Never backwards, and never a generation skipped.
+    expect(presented).toEqual(['1', '2', '3'])
+  })
 })
 
 describe('concurrent render frames', () => {
