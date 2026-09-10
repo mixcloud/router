@@ -1424,6 +1424,78 @@ describe('concurrent render frames', () => {
     expect(router.stores.location.get().search).toEqual({ page: 2 })
   })
 
+
+  /**
+   * `InnerWrap` wraps the whole match tree — the `Transitioner` and the root
+   * Suspense boundary included — so it is *outside* the route tree, and reads
+   * the committed publication like any other outside reader. That is
+   * deliberate: the visible surroundings must not jump to the destination
+   * while the route on screen is still the old one, which is what lets
+   * `<ViewTransition>` pair an old and a new element at all.
+   *
+   * The cost, worth naming: something inside `InnerWrap` that suspends until
+   * the wrapper describes the destination would wait for a commit that its own
+   * suspension prevents. That is a property of the committed scope rather than
+   * of `InnerWrap`, and it applies to any consumer outside the route tree.
+   */
+  test('InnerWrap reads the committed route while a navigation is staged', async () => {
+    const gate = deferred()
+
+    function Wrap({ children }: { children: React.ReactNode }) {
+      const pathname = useRouterState({ select: (s) => s.location.pathname })
+      return (
+        <>
+          <div data-testid="wrap">{pathname}</div>
+          {children}
+        </>
+      )
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      loader: () => gate.promise,
+      component: () => <h1>Next Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute]),
+      experimental_concurrentRenderFrames: true,
+      InnerWrap: Wrap,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    expect(screen.getByTestId('wrap').textContent).toBe('/')
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/next' })
+    })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+
+    // The head is at /next; the wrapper is still describing what is on screen.
+    expect(router.stores.location.get().pathname).toBe('/next')
+    expect(screen.getByTestId('wrap').textContent).toBe('/')
+
+    await act(async () => {
+      gate.resolve()
+      await gate.promise
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+    // And once it commits, it follows.
+    await waitFor(() =>
+      expect(screen.getByTestId('wrap').textContent).toBe('/next'),
+    )
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
