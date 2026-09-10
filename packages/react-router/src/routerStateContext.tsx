@@ -236,6 +236,36 @@ export function RouterStateFrameMode({
 }
 
 /**
+ * The store-path arm of `RouterContextProvider`.
+ *
+ * Publishes the frozen decision the way the frame arm does, and clears any
+ * owner and scope inherited from an ancestor provider. A store-path tree owns
+ * no frames, and `Transitioner` takes its owner from context without
+ * consulting the mode — so a store-path provider nested under a frame-path one
+ * would drive *that* router's owner with this router's publications, writing a
+ * `frameId` into this router's acknowledgement slot where its `Matches`
+ * expects a set of matches. Its navigations then never settle and the outer
+ * router's staged frame is replaced by one assembled from the wrong store.
+ */
+export function RouterStateStorePath({
+  router,
+  children,
+}: {
+  router: AnyRouter
+  children: React.ReactNode
+}) {
+  return (
+    <routerStateOwnerContext.Provider value={undefined}>
+      <routerStateScopeContext.Provider value={undefined}>
+        <RouterStateFrameMode router={router} frameMode={false}>
+          {children}
+        </RouterStateFrameMode>
+      </routerStateScopeContext.Provider>
+    </routerStateOwnerContext.Provider>
+  )
+}
+
+/**
  * Everything a router's publications need, closed over that one router.
  *
  * Built outside the component because it belongs to the router, not to a

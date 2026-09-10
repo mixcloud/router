@@ -2722,4 +2722,91 @@ describe('concurrent render frames', () => {
     await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
     expect(screen.queryByRole('heading', { name: 'Posts Title' })).toBeNull()
   })
+
+  /**
+   * A store-path provider nested under a frame-path one owns no frames.
+   *
+   * `Transitioner` takes its owner from context without consulting the mode,
+   * and the store-path arm of `RouterContextProvider` used to publish only the
+   * mode — so a nested store-path provider inherited the *outer* router's
+   * owner and drove it with its own publications. That writes a `frameId` into
+   * the inner router's acknowledgement slot, where its own `Matches` is
+   * looking for a set of matches, so the inner navigation is never
+   * acknowledged: it stays `pending` for good, its route never renders and its
+   * promise never settles.
+   *
+   * The control that makes this a regression rather than a limitation of
+   * nesting: with the outer provider on the store path the same tree works
+   * perfectly, so the outer router's option is what breaks the inner one.
+   */
+  test('a nested store-path provider is not driven by the outer frame owner', async () => {
+    const innerRoot = createRootRoute({ component: () => <Outlet /> })
+    const innerIndex = createRoute({
+      getParentRoute: () => innerRoot,
+      path: '/',
+      component: () => <h1>Inner Index</h1>,
+    })
+    const innerOther = createRoute({
+      getParentRoute: () => innerRoot,
+      path: '/other',
+      component: () => <h1>Inner Other</h1>,
+    })
+    const inner = createRouter({
+      routeTree: innerRoot.addChildren([innerIndex, innerOther]),
+      experimental_concurrentRenderFrames: false,
+      // Its own history, so navigating it cannot move the outer router.
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+
+    const outerRoot = createRootRoute({ component: () => <Outlet /> })
+    const outerIndex = createRoute({
+      getParentRoute: () => outerRoot,
+      path: '/',
+      component: () => (
+        <>
+          <h1>Outer Index</h1>
+          <RouterProvider router={inner} />
+        </>
+      ),
+    })
+    const outerPosts = createRoute({
+      getParentRoute: () => outerRoot,
+      path: '/posts',
+      component: () => <h1>Outer Posts</h1>,
+    })
+    const outer = createRouter({
+      routeTree: outerRoot.addChildren([outerIndex, outerPosts]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    render(<RouterProvider router={outer} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Outer Index' }))
+    await waitFor(() => screen.getByRole('heading', { name: 'Inner Index' }))
+    expect(inner.stores.status.get()).toBe('idle')
+
+    let innerNavigation!: Promise<void>
+    act(() => {
+      innerNavigation = inner.navigate({ to: '/other' })
+    })
+    innerNavigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => screen.getByRole('heading', { name: 'Inner Other' }))
+    expect(inner.stores.status.get()).toBe('idle')
+    // The inner router acknowledges with matches, never a frame identity.
+    expect(typeof inner._rendered?.[0]).not.toBe('number')
+    await innerNavigation
+
+    // And the outer router is still able to navigate afterwards.
+    let outerNavigation!: Promise<void>
+    act(() => {
+      outerNavigation = outer.navigate({ to: '/posts' })
+    })
+    outerNavigation.catch(() => {})
+    await waitFor(() => screen.getByRole('heading', { name: 'Outer Posts' }))
+    await outerNavigation
+  })
 })

@@ -5,8 +5,8 @@ import { hasKeys } from '@tanstack/router-core'
 import { Matches } from './Matches'
 import { routerContext } from './routerContext'
 import {
-  RouterStateFrameMode,
   RouterStateProvider,
+  RouterStateStorePath,
   useFrameMode,
 } from './routerStateContext'
 import type {
@@ -48,9 +48,9 @@ export function RouterContextProvider<
   const childrenWithState = useFrameMode(router as AnyRouter) ? (
     <RouterStateProvider router={router}>{children}</RouterStateProvider>
   ) : (
-    <RouterStateFrameMode router={router as AnyRouter} frameMode={false}>
+    <RouterStateStorePath router={router as AnyRouter}>
       {children}
-    </RouterStateFrameMode>
+    </RouterStateStorePath>
   )
 
   const provider = (
