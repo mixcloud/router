@@ -15,7 +15,6 @@ import { SafeFragment } from './SafeFragment'
 import {
   RouterStateFrame,
   useFrameMode,
-  useFrameRootBoundary,
   useRouterStateOwner,
   useRouterStateSelector,
 } from './routerStateContext'
@@ -147,14 +146,20 @@ export function Matches() {
   const pendingElement = renderPending(router, rootRoute)
 
   const _isServer = isServer ?? router.isServer
-  // SSR and hydration keep upstream's route-level boundaries for streaming
-  // and an identical hydration tree. Afterwards, the frame path consolidates
-  // suspension at this root so one complete frame is acknowledged atomically.
-  const frameRootBoundary = useFrameRootBoundary(router, _isServer)
+  // Unchanged from upstream, deliberately. An earlier revision wrote this as
+  // `router.ssr && !useFrameRootBoundary(...)`, which reads as though the
+  // frame path opens a boundary here that the store path does not — but the
+  // clause is dead: `frameRootBoundary` requires `!router.ssr`, so it can only
+  // ever be false where `router.ssr` is what decides the expression. The
+  // consolidation the frame path does perform is in `Match.tsx`, which drops
+  // the *route-level* boundaries so one complete frame is acknowledged
+  // atomically; this root boundary is the same one upstream renders.
+  //
+  // It follows that the wrapper type's dependence on `router.ssr` — and the
+  // remount if a mounted provider is handed a router with the opposite
+  // setting — is upstream behaviour that this option neither adds nor fixes.
   const ResolvedSuspense =
-    _isServer || (router.ssr && !frameRootBoundary)
-      ? SafeFragment
-      : React.Suspense
+    _isServer || router.ssr ? SafeFragment : React.Suspense
 
   const inner = (
     <>
