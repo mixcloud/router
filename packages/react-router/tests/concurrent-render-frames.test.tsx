@@ -956,6 +956,71 @@ describe('concurrent render frames', () => {
     expect(router.stores.status.get()).toBe('idle')
   })
 
+  /**
+   * The other half of adopting an in-flight frame, for a router this tree
+   * returns to rather than mounts on. `Matches` survives the prop change, so
+   * the state initializer does not run again; the queue is pruned to whatever
+   * router is current, so coming back to one whose owner still holds a staged
+   * frame left it with nothing queued. Its acknowledgement compared against
+   * the committed frame and never settled, so that router stayed `pending`.
+   *
+   * Asserted on the router's status: swapping the router under a mounted
+   * provider does not render the replacement's route tree upstream either, so
+   * there is no DOM to compare.
+   */
+  test('a router returned to adopts the frame still in flight', async () => {
+    const gate = deferred()
+
+    const makeSwapRouter = (slow: boolean) => {
+      const rootRoute = createRootRoute({ component: () => <Outlet /> })
+      const indexRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/',
+        component: () => <h1>Index Title</h1>,
+      })
+      const slowRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/slow',
+        loader: slow ? () => gate.promise : undefined,
+        component: () => <h1>Slow Title</h1>,
+      })
+      return createRouter({
+        routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+        defaultPendingMs: 0,
+        experimental_concurrentRenderFrames: true,
+        history: createMemoryHistory({ initialEntries: ['/'] }),
+      })
+    }
+
+    const first = makeSwapRouter(false)
+    const second = makeSwapRouter(true)
+    const tree = (router: AnyRouter) => (
+      <RouterContextProvider router={router}>
+        <Matches />
+      </RouterContextProvider>
+    )
+
+    const { rerender } = render(tree(first))
+    await waitFor(() => expect(first.stores.status.get()).toBe('idle'))
+
+    // Onto the second router, with a navigation that cannot finish yet.
+    rerender(tree(second))
+    const navigation = second.navigate({ to: '/slow' })
+    navigation.catch(() => {})
+    await waitFor(() => expect(second.stores.status.get()).toBe('pending'))
+
+    // Away — which prunes the queue to the other router — and back, with the
+    // load finished in between so nothing new is staged on the return.
+    rerender(tree(first))
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+    rerender(tree(second))
+
+    await waitFor(() => expect(second.stores.status.get()).toBe('idle'))
+  })
+
   test('a provider handed a different router builds an owner for it', async () => {
     const owners: Array<AnyRouter | undefined> = []
 

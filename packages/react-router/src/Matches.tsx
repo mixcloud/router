@@ -85,6 +85,24 @@ export function Matches() {
       ? new Map([[router, routerStateOwner.pending]])
       : new Map(),
   )
+  // The same adoption again, for a router this tree returns to rather than
+  // mounts on. The initializer runs once, so switching away from a router
+  // mid-navigation and back — the map pruned to the other router meanwhile —
+  // left it with no queued frame while its owner still held one in flight.
+  //
+  // Deliberately only at mount and on a change of router, never on every
+  // render: a tree already rendering for this router receives its staged
+  // frame through the dispatch, inside `startTransition`. Adopting outside
+  // those two moments would let an urgent render pick up a frame it is not
+  // presenting and acknowledge it, which is the isolation this option exists
+  // to provide.
+  const [adoptedRouter, setAdoptedRouter] = React.useState(router)
+  if (adoptedRouter !== router) {
+    setAdoptedRouter(router)
+    if (!queuedFrames.get(router) && routerStateOwner?.pending) {
+      setQueuedFrames(new Map([[router, routerStateOwner.pending]]))
+    }
+  }
   const renderFrame = queuedFrames.get(router)
   // Keep only this router's slot. A dispatch that outlived its router can
   // insert one for a router this tree will never render again, and nothing
