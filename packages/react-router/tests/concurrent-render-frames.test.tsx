@@ -2215,6 +2215,77 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * Adoption has to apply the same supersession test as the owner does.
+   *
+   * Cancelling a superseded frame happens from the store subscription a
+   * provider holds — so while no provider is mounted, nothing notices the
+   * head moving. A tree mounting afterwards adopted whatever was staged, and
+   * because a descendant's layout effect runs before the provider's own, it
+   * acknowledged and committed that frame before anything could drop it: the
+   * route the head had left, back on screen.
+   */
+  test('a tree does not adopt a frame the head has left', async () => {
+    const first = deferred()
+    const second = deferred()
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const firstRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/first',
+      loader: () => first.promise,
+      component: () => <h1>First Title</h1>,
+    })
+    const secondRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/second',
+      loader: () => second.promise,
+      component: () => <h1>Second Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, firstRoute, secondRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // The first navigation is in flight when the tree goes away, and its load
+    // finishes with nothing left to render it — so the owner holds it staged.
+    const toFirst = router.navigate({ to: '/first' })
+    toFirst.catch(() => {})
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    cleanup()
+    first.resolve()
+    await act(async () => {
+      await first.promise
+    })
+
+    // The head moves on while there is no provider to notice.
+    const toSecond = router.navigate({ to: '/second' })
+    toSecond.catch(() => {})
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/second'),
+    )
+
+    // And a tree mounts before the successor stages anything.
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByRole('heading', { name: 'First Title' })).toBeNull()
+
+    second.resolve()
+    await waitFor(() => screen.getByRole('heading', { name: 'Second Title' }))
+  })
+
+  /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
    * consumer's selection changed. A throw there reaches no error boundary and

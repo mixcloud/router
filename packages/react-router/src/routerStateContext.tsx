@@ -96,6 +96,26 @@ function resolveFrame(
 }
 
 /**
+ * Whether the head has moved away from a staged publication.
+ *
+ * The history key is compared as well as the href, because a replacement can
+ * target the same URL with different state — same href, different entry — and
+ * the frame staged before it is just as stale. The location decides this
+ * rather than the frame identity: a publication that changes matches without
+ * moving the location, a background refresh say, is not a supersession, and
+ * treating it as one would wedge the navigation it belongs to.
+ */
+function isSuperseded(
+  frame: RouterRenderFrame,
+  head: RouterRenderFrame,
+): boolean {
+  return (
+    head.location.href !== frame.location.href ||
+    head.location.state.__TSR_key !== frame.location.state.__TSR_key
+  )
+}
+
+/**
  * Overlay navigation progress onto a publication without changing its content.
  *
  * Deliberately keeps the publication's `frameId`. That identity is what an
@@ -252,7 +272,19 @@ function createOwner(router: AnyRouter): RouterStateOwner {
       return root.committed
     },
     get pending() {
-      return pending
+      // Only while the head still names it. A tree adopting this frame is one
+      // that was never offered it — it mounted, or returned to this router —
+      // and nothing cancelled it in between, because cancelling happens from
+      // the store subscription a provider holds and there may have been no
+      // provider to hold one. Adopting it then would acknowledge and commit a
+      // route the head has already left, and `publish` could no longer
+      // recognise it as pending in order to drop it.
+      if (!pending) {
+        return undefined
+      }
+      return isSuperseded(pending, router.stores.__store.get())
+        ? undefined
+        : pending
     },
     begin: () => {
       staging = true
@@ -302,12 +334,7 @@ function createOwner(router: AnyRouter): RouterStateOwner {
     },
     publish: () => {
       const head = router.stores.__store.get()
-      const superseded =
-        pending !== undefined &&
-        !staging &&
-        (head.location.href !== pending.location.href ||
-          head.location.state.__TSR_key !== pending.location.state.__TSR_key)
-      if (superseded) {
+      if (pending !== undefined && !staging && isSuperseded(pending, head)) {
         // Superseded before anything rendered it. A staged frame is offered
         // to a tree that may be suspended, and a replacement navigation moves
         // the head without publishing anything of its own until its own load
@@ -318,14 +345,6 @@ function createOwner(router: AnyRouter): RouterStateOwner {
         // fall back to the publication they are already presenting, which is
         // the route still on screen, and the successor stages its own frame
         // when it is ready.
-        //
-        // The history key is compared as well as the href, because a
-        // replacement can target the same URL with different state — same
-        // href, different entry — and that frame is just as stale. Comparing
-        // the location rather than the frame identity is deliberate: a
-        // publication that changes matches without moving the location, a
-        // background refresh say, is not a supersession, and cancelling on it
-        // would wedge the navigation it belongs to.
         owner.cancel()
         return
       }
