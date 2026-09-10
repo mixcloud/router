@@ -95,7 +95,15 @@ function resolveFrame(
   return staged && staged.frameId === frameId ? staged : scope.committed
 }
 
-/** Overlay navigation progress onto a publication without changing its content. */
+/**
+ * Overlay navigation progress onto a publication without changing its content.
+ *
+ * Deliberately keeps the publication's `frameId`. That identity is what an
+ * acknowledgement is matched against, so a new one here would orphan the
+ * render presenting this publication — and it identifies route content, which
+ * progress is not. Two states can therefore share a `frameId` and differ in
+ * `status`, which the `RouterState` docs state as part of the contract.
+ */
 function withProgress(
   frame: RouterRenderFrame,
   head: RouterRenderFrame,

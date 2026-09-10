@@ -574,7 +574,15 @@ export interface RouterState<
   in out TRouteTree extends AnyRoute = AnyRoute,
   in out TRouteMatch = MakeRouteMatchUnion,
 > {
-  /** Monotonic identity for one atomically assembled render snapshot. */
+  /**
+   * Monotonic identity for one atomically assembled snapshot of route content
+   * — `location`, `matches`, `resolvedLocation`.
+   *
+   * Not a change token for the whole state: `status` and `isLoading` are
+   * progress, and an adapter may overlay them onto a snapshot a component is
+   * already presenting while keeping this identity, since it is what an
+   * acknowledgement is matched against.
+   */
   frameId: number
   status: 'pending' | 'idle'
   isLoading: boolean
