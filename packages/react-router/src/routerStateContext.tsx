@@ -251,6 +251,33 @@ function createOwner(router: AnyRouter): RouterStateOwner {
   return owner
 }
 
+/**
+ * One owner per router, for the router's lifetime.
+ *
+ * Not a ref on the provider: a ref is shared by every tree rendering it, so a
+ * render for another router — one that may be discarded — would replace the
+ * owner belonging to the tree still on screen. A later render for the
+ * original router would then build a *new* owner, seeded from that router's
+ * current store head, which during a staged navigation is the destination:
+ * the tree would expose the route being prepared and orphan the
+ * acknowledgement the first owner is still waiting on.
+ *
+ * Keyed weakly, so an owner lives exactly as long as its router. Building one
+ * is idempotent per router, so a discarded render costs nothing and a
+ * surviving one finds the same owner.
+ */
+const ownersByRouter = new WeakMap<AnyRouter, RouterStateOwner>()
+
+function ownerFor(router: AnyRouter): RouterStateOwner {
+  const existing = ownersByRouter.get(router)
+  if (existing) {
+    return existing
+  }
+  const owner = createOwner(router)
+  ownersByRouter.set(router, owner)
+  return owner
+}
+
 export function RouterStateProvider({
   router,
   children,
@@ -261,12 +288,7 @@ export function RouterStateProvider({
   // Keyed by router identity. A mounted provider can be handed a different
   // router — a test rerender, HMR, switching tenant — and an owner built for
   // the previous one would keep reading and staging that router's state.
-  const ownerRef = React.useRef<RouterStateOwner | undefined>(undefined)
-  if (!ownerRef.current || ownerRef.current.router !== router) {
-    ownerRef.current = createOwner(router)
-  }
-
-  const owner = ownerRef.current
+  const owner = ownerFor(router)
 
   useLayoutEffect(() => {
     const subscription = router.stores.__store.subscribe(() => owner.publish())

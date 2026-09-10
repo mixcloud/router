@@ -74,6 +74,17 @@ export function Matches() {
     ReadonlyMap<AnyRouter, RouterRenderFrame>
   >(() => new Map())
   const renderFrame = queuedFrames.get(router)
+  // Keep only this router's slot. A dispatch that outlived its router can
+  // insert one for a router this tree will never render again, and nothing
+  // else would remove it — every outgoing router and its route data would be
+  // retained for the life of this component. Adjusting state during render is
+  // React's own answer to this shape; the write below re-renders immediately,
+  // so the map is bounded whatever a stale dispatch does.
+  if (queuedFrames.size > (renderFrame ? 1 : 0)) {
+    setQueuedFrames(
+      renderFrame ? new Map([[router, renderFrame]]) : new Map(),
+    )
+  }
   const setRenderFrame = React.useCallback(
     (frame: RouterRenderFrame | undefined) =>
       setQueuedFrames((previous) => {
