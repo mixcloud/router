@@ -293,6 +293,31 @@ export function RouterStateFrame({ children }: { children: React.ReactNode }) {
   )
 }
 
+/**
+ * The publication this position is presenting, for code that runs outside
+ * render — an event handler resolving a navigation against the route the user
+ * is looking at, say.
+ *
+ * Returns a getter, and subscribes to nothing: a scope's identity is stable
+ * for the router's lifetime, so reading it costs no re-renders, and an
+ * imperative caller wants the answer at call time anyway. It gives the
+ * publication on screen: an event is delivered to the committed tree, so that
+ * is the one it should resolve against. `undefined` off the frame path, where
+ * the router's own head is the right source and already fresh.
+ */
+export function usePresentedLocation(
+  router: AnyRouter,
+): (() => RouterRenderFrame['location'] | undefined) | undefined {
+  const scope = React.useContext(routerStateScopeContext)
+  const frameMode = useFrameMode(router)
+  return React.useMemo(() => {
+    if (!frameMode || !scope || scope.router !== router) {
+      return undefined
+    }
+    return () => scope.committed.location
+  }, [frameMode, router, scope])
+}
+
 export function useRouterStateOwner() {
   return React.useContext(routerStateOwnerContext)
 }

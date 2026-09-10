@@ -24,6 +24,7 @@ import {
   createRouter,
   useLocation,
   useMatchRoute,
+  useNavigate,
   useRouterState,
 } from '../src'
 import type { AnyRouter } from '@tanstack/router-core'
@@ -1274,6 +1275,88 @@ describe('concurrent render frames', () => {
     })
     await navigation
     await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+  })
+
+
+  /**
+   * The same question as a link's click, asked imperatively: a handler on the
+   * route the user is looking at must resolve against that route, not the one
+   * the router is preparing.
+   */
+  test('an imperative navigation resolves against the visible route', async () => {
+    const gate = deferred()
+    let loads = 0
+
+    function Controls() {
+      const navigate = useNavigate()
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void navigate({
+              to: '/posts',
+              search: (prev: any) => ({ page: (prev.page ?? 1) + 1 }),
+            })
+          }}
+        >
+          Next page
+        </button>
+      )
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Controls />
+          <Outlet />
+        </>
+      ),
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      validateSearch: (search: Record<string, unknown>) => ({
+        page: Number(search.page ?? 1),
+      }),
+      loaderDeps: ({ search }: { search: { page: number } }) => ({
+        page: search.page,
+      }),
+      loader: async () => {
+        loads++
+        if (loads > 1) {
+          await gate.promise
+        }
+      },
+      component: () => {
+        const page = postsRoute.useSearch({ select: (s) => s.page })
+        return <h1>{`Posts ${page}`}</h1>
+      },
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    window.history.replaceState(null, '', '/posts?page=1')
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 1' }))
+
+    // Head moves to page 5 and stays pending, so the visible route and the
+    // head disagree about what "the next page" is.
+    act(() => {
+      void router.navigate({ to: '/posts', search: { page: 5 } })
+    })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    screen.getByRole('heading', { name: 'Posts 1' })
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    })
+    gate.resolve()
+
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 2' }))
+    expect(router.stores.location.get().search).toEqual({ page: 2 })
   })
 
   /**
