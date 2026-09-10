@@ -302,7 +302,12 @@ function createOwner(router: AnyRouter): RouterStateOwner {
     },
     publish: () => {
       const head = router.stores.__store.get()
-      if (pending && !staging && head.location.href !== pending.location.href) {
+      const superseded =
+        pending !== undefined &&
+        !staging &&
+        (head.location.href !== pending.location.href ||
+          head.location.state.__TSR_key !== pending.location.state.__TSR_key)
+      if (superseded) {
         // Superseded before anything rendered it. A staged frame is offered
         // to a tree that may be suspended, and a replacement navigation moves
         // the head without publishing anything of its own until its own load
@@ -313,6 +318,14 @@ function createOwner(router: AnyRouter): RouterStateOwner {
         // fall back to the publication they are already presenting, which is
         // the route still on screen, and the successor stages its own frame
         // when it is ready.
+        //
+        // The history key is compared as well as the href, because a
+        // replacement can target the same URL with different state — same
+        // href, different entry — and that frame is just as stale. Comparing
+        // the location rather than the frame identity is deliberate: a
+        // publication that changes matches without moving the location, a
+        // background refresh say, is not a supersession, and cancelling on it
+        // would wedge the navigation it belongs to.
         owner.cancel()
         return
       }
