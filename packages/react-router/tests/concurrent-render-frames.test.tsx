@@ -1359,6 +1359,71 @@ describe('concurrent render frames', () => {
     expect(router.stores.location.get().search).toEqual({ page: 2 })
   })
 
+
+  /**
+   * The limit of resolving an imperative navigation from the visible route,
+   * pinned rather than left to be discovered.
+   *
+   * React runs layout effects bottom-up, and `MatchesInner` commits the frame
+   * from a layout effect of its own — an ancestor's. So a destination
+   * component calling `navigate` from its *mount* layout effect runs before
+   * the frame it rendered from has committed, and resolves against the route
+   * being left: it renders page 5 and navigates to page 2.
+   *
+   * Which is right depends on where the caller is, and nothing available
+   * outside render says: the same getter that gets this case wrong is what
+   * gets a handler on the visible route right, and that is the common case. It
+   * needs the per-tree frame identity that mount-time isolation needs, and is
+   * documented with it. This test exists so the trade cannot change silently.
+   */
+  test('an imperative navigation from a mount effect resolves against the route being left', async () => {
+    let redirected = false
+    const rendered: Array<number> = []
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      validateSearch: (search: Record<string, unknown>) => ({
+        page: Number(search.page ?? 1),
+      }),
+      component: function Posts() {
+        const page = postsRoute.useSearch({ select: (s) => s.page })
+        const navigate = useNavigate()
+        rendered.push(page)
+        React.useLayoutEffect(() => {
+          if (page === 5 && !redirected) {
+            redirected = true
+            void navigate({
+              to: '/posts',
+              search: (prev: any) => ({ page: (prev.page ?? 1) + 1 }),
+            })
+          }
+        }, [page, navigate])
+        return <h1>{`Posts ${page}`}</h1>
+      },
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    window.history.replaceState(null, '', '/posts?page=1')
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts 1' }))
+
+    act(() => {
+      void router.navigate({ to: '/posts', search: { page: 5 } })
+    })
+    await waitFor(() => expect(redirected).toBe(true))
+    await waitFor(() => expect(router.stores.status.get()).toBe('idle'))
+
+    // Rendered page 5, resolved from page 1. Documented, not desired.
+    expect(rendered).toContain(5)
+    expect(router.stores.location.get().search).toEqual({ page: 2 })
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
