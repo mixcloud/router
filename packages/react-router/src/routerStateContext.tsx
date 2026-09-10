@@ -74,9 +74,23 @@ type RouterStateOwner = {
 
 const defaultCompare = (a: unknown, b: unknown) => a === b
 
-/** The publication a fresh reader at this position should start from. */
+/**
+ * The publication a fresh reader at this position should start from.
+ *
+ * A staged publication the head has already left is not offered. Cancelling
+ * one runs from the store subscription a provider holds, so while no provider
+ * was mounted nothing dropped it — and seeding from it would mount the route
+ * it names: descendant effects run before the provider's, so a `<Navigate>`
+ * in that route would fire a redirect from a frame nothing ever acknowledged.
+ */
 function offeredFrame(scope: RouterStateScope): RouterRenderFrame {
-  return scope.staged ?? scope.committed
+  const staged = scope.staged
+  if (!staged) {
+    return scope.committed
+  }
+  return isSuperseded(staged, scope.router.stores.__store.get())
+    ? scope.committed
+    : staged
 }
 
 /**

@@ -2286,6 +2286,80 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * Rejecting a stale frame for adoption is not enough: it is still in the
+   * staged slot, and that slot is what seeds a fresh reader. `MatchesInner`'s
+   * own matches reader is one, so the route the stale frame names still
+   * mounted and ran its effects — descendant effects run before the
+   * provider's, so a `<Navigate>` in that route would fire a redirect from a
+   * frame nothing ever acknowledged. The frame is refused at the seeding
+   * point too.
+   */
+  test('a rejected staged frame does not mount its route', async () => {
+    const first = deferred()
+    const second = deferred()
+    const mounted: Array<string> = []
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const firstRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/first',
+      loader: () => first.promise,
+      component: function FirstComponent() {
+        React.useEffect(() => {
+          mounted.push('first')
+        }, [])
+        return <h1>First Title</h1>
+      },
+    })
+    const secondRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/second',
+      loader: () => second.promise,
+      component: () => <h1>Second Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, firstRoute, secondRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    const toFirst = router.navigate({ to: '/first' })
+    toFirst.catch(() => {})
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    cleanup()
+    first.resolve()
+    await act(async () => {
+      await first.promise
+    })
+
+    const toSecond = router.navigate({ to: '/second' })
+    toSecond.catch(() => {})
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/second'),
+    )
+
+    mounted.length = 0
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The stale route must not have mounted at all.
+    expect(mounted).toEqual([])
+
+    second.resolve()
+    await waitFor(() => screen.getByRole('heading', { name: 'Second Title' }))
+  })
+
+  /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
    * consumer's selection changed. A throw there reaches no error boundary and
