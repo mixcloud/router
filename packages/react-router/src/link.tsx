@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import {
   deepEqual,
   exactPathTest,
@@ -486,7 +486,9 @@ export function useLinkProps<
         presentedFrame,
       )
     : // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
-      useStore(router.stores.location, selectLinkState, compareLinkState)
+      useSelector(router.stores.location, selectLinkState, {
+        compare: compareLinkState,
+      })
   const externalLink = isActive === undefined ? href : undefined
   const linkDisabled = disabled || href === undefined
 

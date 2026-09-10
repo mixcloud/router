@@ -510,7 +510,7 @@ export function useRouterStateOwner() {
  *
  * There is no presentation to isolate here, so this scope presents the store
  * head and treats every notification as a plain refresh: the same content the
- * default `useStore` path gives. Going through the *same* hooks as a scoped
+ * default `useSelector` path gives. Going through the *same* hooks as a scoped
  * reader is the point — the argument can change between renders, and a reader
  * that changed hook shape with it would crash on the hook order rather than
  * merely read a different router. Cached per router so the identity the

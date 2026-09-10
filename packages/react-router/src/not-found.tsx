@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { isNotFound } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import { CatchBoundary } from './CatchBoundary'
 import { useRouter } from './useRouter'
 import {
@@ -32,9 +32,12 @@ export function CatchNotFound(props: {
   } else {
     // TODO: Some way for the user to programmatically reset the not-found boundary?
     // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-    pathname = useStore(router.stores.location, (location) => location.pathname)
+    pathname = useSelector(
+      router.stores.location,
+      (location) => location.pathname,
+    )
     // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-    status = useStore(router.stores.status, (status) => status)
+    status = useSelector(router.stores.status)
   }
   const resetKey = `not-found-${pathname}-${status}`
 

@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import { invariant, replaceEqualDeep } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { dummyMatchContext, matchContext } from './matchContext'
@@ -222,7 +222,7 @@ export function useMatch<
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const selector = useStructuralSharing(opts, router)
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
-    const matchSelection = useStore(matchStore, (match) =>
+    const matchSelection = useSelector(matchStore, (match) =>
       match ? selector(match as any) : dummyMatch,
     )
 

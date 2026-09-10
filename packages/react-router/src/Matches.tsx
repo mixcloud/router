@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import { rootRouteId } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { CatchBoundary } from './CatchBoundary'
@@ -212,8 +212,12 @@ function MatchesInner({
   } else if (isServer ?? router.isServer) {
     matches = router.stores.matches.get()
   } else {
+    // `Array.isArray` rather than `??`, which is what upstream can use here:
+    // the acknowledgement slot was widened to carry a frame identity, so on
+    // the frame path it holds a `frameId` number rather than a set of matches,
+    // and coalescing would hand this reader that number.
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    matches = useStore(router.stores.matches, (value) =>
+    matches = useSelector(router.stores.matches, (value) =>
       Array.isArray(acknowledgement[0 /* offered */])
         ? acknowledgement[0 /* offered */]
         : value,
@@ -353,7 +357,7 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
         // one hook that spans both, so it is the one that subscribes to both;
         // non-pending queries still resolve against the presented frame.
         // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-        useStore(router.stores.location, (location) => location.href),
+        useSelector(router.stores.location, (location) => location.href),
       ],
     )
   }
@@ -373,11 +377,11 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
     [
       router,
       // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-      useStore(router.stores.location, (location) => location.href),
+      useSelector(router.stores.location, (location) => location.href),
       // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-      useStore(router.stores.resolvedLocation, (location) => location?.href),
+      useSelector(router.stores.resolvedLocation, (location) => location?.href),
       // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-      useStore(router.stores.status, (status) => status),
+      useSelector(router.stores.status),
     ],
   )
 }
@@ -472,7 +476,7 @@ export function useMatches<
   }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  return useStore(
+  return useSelector(
     router.stores.matches,
     // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
     useStructuralSharing(opts, router),
