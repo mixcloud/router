@@ -22,6 +22,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useCanGoBack,
   useLocation,
   useMatchRoute,
   useNavigate,
@@ -401,6 +402,76 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
 
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
     await waitFor(() => expect(router.stores.status.get()).toBe('idle'))
+  })
+
+  /**
+   * `useCanGoBack` is an exception to the rule the rest of the adapter
+   * follows, and this pins it. `history.back()` acts on the browser's
+   * history, not on the frame on screen, so the answer has to describe the
+   * history the button would actually move.
+   *
+   * Reading the presented frame instead disagrees with it for exactly the
+   * staged window: a push from index 0 leaves the presented frame at 0 and
+   * the control disabled while the entry is already there to pop — and the
+   * dangerous direction, a pending pop to index 0, leaves it at 1, where a
+   * back control fires a second pop and leaves the application.
+   */
+  test('canGoBack follows the browser history, not the presented frame', async () => {
+    const gate = deferred()
+    const seen: Array<boolean> = []
+
+    function BackProbe() {
+      const canGoBack = useCanGoBack()
+      seen.push(canGoBack)
+      return <div data-testid="back">{String(canGoBack)}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <BackProbe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    // Index 0: nothing to go back to.
+    expect(screen.getByTestId('back')).toHaveTextContent('false')
+
+    const navigation = router.navigate({ to: '/slow' })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    // The entry exists and can be popped, while `/` is still on screen.
+    expect(
+      screen.getByRole('heading', { name: 'Index Title' }),
+    ).toBeInTheDocument()
+    expect(router.stores.location.get().state.__TSR_index).toBe(1)
+    await waitFor(() =>
+      expect(screen.getByTestId('back')).toHaveTextContent('true'),
+    )
+
+    gate.resolve()
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+    expect(screen.getByTestId('back')).toHaveTextContent('true')
+    expect(seen).toContain(true)
   })
 })
 
