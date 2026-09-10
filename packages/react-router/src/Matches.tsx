@@ -97,24 +97,34 @@ export function Matches() {
   // presenting and acknowledge it, which is the isolation this option exists
   // to provide.
   const [adoptedRouter, setAdoptedRouter] = React.useState(router)
-  if (adoptedRouter !== router) {
+  const adopting = adoptedRouter !== router
+  if (adopting) {
     setAdoptedRouter(router)
-    if (!queuedFrames.get(router) && routerStateOwner?.pending) {
-      setQueuedFrames(new Map([[router, routerStateOwner.pending]]))
-    }
   }
-  const renderFrame = queuedFrames.get(router)
-  // Keep only this router's slot. A dispatch that outlived its router can
-  // insert one for a router this tree will never render again, and nothing
+
+  // Adoption and pruning decide the same value, so they are resolved together
+  // here rather than written separately. Two plain writes in one render do not
+  // compose — the second wins — so pruning against the pre-adoption map threw
+  // the adopted frame away, and the next render skipped adoption because the
+  // router had already been recorded.
+  //
+  // Pruning keeps only this router's slot. A dispatch that outlived its router
+  // can insert one for a router this tree will never render again, and nothing
   // else would remove it — every outgoing router and its route data would be
   // retained for the life of this component. Adjusting state during render is
   // React's own answer to this shape; the write below re-renders immediately,
   // so the map is bounded whatever a stale dispatch does.
-  if (queuedFrames.size > (renderFrame ? 1 : 0)) {
-    setQueuedFrames(
-      renderFrame ? new Map([[router, renderFrame]]) : new Map(),
-    )
+  let effectiveFrames = queuedFrames
+  const queued = effectiveFrames.get(router)
+  if (adopting && !queued && routerStateOwner?.pending) {
+    effectiveFrames = new Map([[router, routerStateOwner.pending]])
+  } else if (effectiveFrames.size > (queued ? 1 : 0)) {
+    effectiveFrames = queued ? new Map([[router, queued]]) : new Map()
   }
+  if (effectiveFrames !== queuedFrames) {
+    setQueuedFrames(effectiveFrames)
+  }
+  const renderFrame = effectiveFrames.get(router)
   const setRenderFrame = React.useCallback(
     (frame: RouterRenderFrame | undefined) =>
       setQueuedFrames((previous) => {
