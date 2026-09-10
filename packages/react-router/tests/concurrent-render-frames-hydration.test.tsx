@@ -31,6 +31,11 @@ afterEach(async () => {
  */
 test('hydration does not remount the route tree', async () => {
   const lifecycle: Array<string> = []
+  // Swallowing these would let the test pass for the wrong reason: a
+  // hydration mismatch that falls back to client rendering also produces
+  // exactly one `mount`, and the point of the test is that the tree was
+  // *hydrated*, not replaced.
+  const recoverableErrors: Array<unknown> = []
 
   function IndexPage() {
     React.useEffect(() => {
@@ -75,9 +80,15 @@ test('hydration does not remount the route tree', async () => {
   document.body.appendChild(container)
 
   await act(async () => {
-    const root = hydrateRoot(container, <RouterProvider router={clientRouter} />, {
-      onRecoverableError: () => {},
-    })
+    const root = hydrateRoot(
+      container,
+      <RouterProvider router={clientRouter} />,
+      {
+        onRecoverableError: (error) => {
+          recoverableErrors.push(error)
+        },
+      },
+    )
     cleanups.push(async () => {
       await act(() => root.unmount())
     })
@@ -90,5 +101,6 @@ test('hydration does not remount the route tree', async () => {
   })
 
   expect(container).toHaveTextContent('Index Title')
+  expect(recoverableErrors).toEqual([])
   expect(lifecycle).toEqual(['mount'])
 })
