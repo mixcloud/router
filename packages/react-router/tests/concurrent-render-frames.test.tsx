@@ -251,6 +251,91 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
     expect(screen.queryByRole('heading', { name: 'First Title' })).toBeNull()
     expect(router.state.location.pathname).toBe('/second')
   })
+
+  /**
+   * What each path shows while the next route loads.
+   *
+   * On the frame path suspension consolidates at one boundary around the route
+   * tree. That boundary mounts with the tree, so the first render shows its
+   * fallback — built from the root route, which is why a route's own
+   * `pendingComponent` is not the one that appears. By the time a navigation
+   * happens the boundary is already mounted, and the navigation is a
+   * transition: React keeps the route on screen rather than replacing it with
+   * a fallback. So no pending UI appears on a navigation at all, and
+   * `pendingMs` / `pendingMinMs` have nothing to time.
+   *
+   * That is the behaviour the option exists to produce, not a defect, but it
+   * is a behaviour change large enough to pin against the store path rather
+   * than leave to be rediscovered. Progress UI is expected to read `status`
+   * and `isLoading`, which stay live on both paths.
+   */
+  test('what stands in for the loading route differs by path', async () => {
+    const gate = deferred()
+
+    const makePendingRouter = (initialPath: string) => {
+      const rootRoute = createRootRoute({
+        pendingComponent: () => <h1>Root Pending</h1>,
+        component: () => (
+          <>
+            <Link to="/slow">Slow</Link>
+            <Outlet />
+          </>
+        ),
+      })
+      const indexRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/',
+        component: () => <h1>Index Title</h1>,
+      })
+      const slowRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/slow',
+        loader: () => gate.promise,
+        pendingMs: 0,
+        pendingComponent: () => <h1>Route Pending</h1>,
+        component: () => <h1>Slow Title</h1>,
+      })
+      return createRouter({
+        routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+        experimental_concurrentRenderFrames,
+        history: createMemoryHistory({ initialEntries: [initialPath] }),
+      })
+    }
+
+    // First render: the boundary mounts with the tree, so a fallback shows on
+    // both paths — the root route's on the frame path, the route's own on the
+    // store path.
+    render(<RouterProvider router={makePendingRouter('/slow')} />)
+    await waitFor(() =>
+      screen.getByRole('heading', {
+        name: experimental_concurrentRenderFrames
+          ? 'Root Pending'
+          : 'Route Pending',
+      }),
+    )
+    cleanup()
+
+    // A navigation, with the boundary already mounted.
+    const router = makePendingRouter('/')
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Slow' }))
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+
+    if (experimental_concurrentRenderFrames) {
+      // The route being left stays on screen instead of any fallback.
+      expect(screen.queryByRole('heading', { name: 'Route Pending' })).toBeNull()
+      expect(screen.queryByRole('heading', { name: 'Root Pending' })).toBeNull()
+      expect(
+        screen.getByRole('heading', { name: 'Index Title' }),
+      ).toBeInTheDocument()
+    } else {
+      await waitFor(() => screen.getByRole('heading', { name: 'Route Pending' }))
+    }
+
+    gate.resolve()
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+  })
 })
 
 describe('concurrent render frames', () => {
@@ -1618,6 +1703,87 @@ describe('concurrent render frames', () => {
 
     gate.resolve()
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+  })
+
+  /**
+   * And the same for a reader that mounts after the provider was handed a
+   * router configured the other way. The tree keeps the frame path it mounted
+   * with, so it goes on staging frames through the replacement router's
+   * scopes; a reader seeded from that owner's own mode would subscribe to the
+   * head instead and read the route being prepared.
+   *
+   * The reader sits outside the route tree on purpose. The root scope only
+   * advances when a navigation commits, so what it presents is unambiguous —
+   * and the replacement's route tree does not render at all (see the swap
+   * test above), so there is nowhere inside it to mount one.
+   */
+  test('a reader mounted after a router swap follows the provider', async () => {
+    const gate = deferred()
+    let showLateConsumer!: (show: boolean) => void
+
+    function LateConsumer() {
+      const pathname = useLocation({ select: (l) => l.pathname })
+      return <div data-testid="late">{pathname}</div>
+    }
+
+    function Harness() {
+      const [show, setShow] = React.useState(false)
+      showLateConsumer = setShow
+      return show ? <LateConsumer /> : null
+    }
+
+    const makeSwapRouter = (frames: boolean) => {
+      const rootRoute = createRootRoute({ component: () => <Outlet /> })
+      const indexRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/',
+        component: () => <h1>Index Title</h1>,
+      })
+      const slowRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/slow',
+        loader: () => gate.promise,
+        component: () => <h1>Slow Title</h1>,
+      })
+      return createRouter({
+        routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+        defaultPendingMs: 0,
+        experimental_concurrentRenderFrames: frames,
+      })
+    }
+
+    const framed = makeSwapRouter(true)
+    const plain = makeSwapRouter(false)
+
+    const { rerender } = render(
+      <RouterContextProvider router={framed}>
+        <Harness />
+        <Matches />
+      </RouterContextProvider>,
+    )
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // The tree stays on the frame path; the owner it now reads through was
+    // built with the option off.
+    rerender(
+      <RouterContextProvider router={plain}>
+        <Harness />
+        <Matches />
+      </RouterContextProvider>,
+    )
+
+    const navigation = plain.navigate({ to: '/slow' })
+    await waitFor(() => expect(plain.stores.status.get()).toBe('pending'))
+    expect(plain.stores.location.get().pathname).toBe('/slow')
+
+    // Mounted urgently, during that navigation.
+    act(() => showLateConsumer(true))
+
+    // The committed publication, not the head.
+    expect(screen.getByTestId('late').textContent).toBe('/')
+
+    gate.resolve()
+    await navigation.catch(() => {})
   })
 
   /**

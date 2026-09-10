@@ -137,6 +137,21 @@ const routerStateOwnerContext = React.createContext<
 >(undefined)
 
 /**
+ * The frame-path decision this provider tree mounted with.
+ *
+ * It lives beside the owner rather than on it because the owner belongs to a
+ * router and the decision belongs to the mounted tree. A provider handed a
+ * router configured the other way installs an owner whose own mode disagrees;
+ * the tree keeps staging and acknowledging frames, so a reader mounting after
+ * that swap has to take the tree's answer, not the replacement owner's, or it
+ * subscribes to the head inside a tree that is still presenting the committed
+ * publication.
+ */
+const routerStateFrameModeContext = React.createContext<boolean | undefined>(
+  undefined,
+)
+
+/**
  * Everything a router's publications need, closed over that one router.
  *
  * Built outside the component because it belongs to the router, not to a
@@ -300,6 +315,9 @@ export function RouterStateProvider({
   // router — a test rerender, HMR, switching tenant — and an owner built for
   // the previous one would keep reading and staging that router's state.
   const owner = ownerFor(router)
+  // The tree's decision, taken from the first owner this provider had and
+  // kept for as long as it is mounted.
+  const [frameMode] = React.useState(() => owner.frameMode)
 
   useLayoutEffect(() => {
     const subscription = router.stores.__store.subscribe(() => owner.publish())
@@ -309,9 +327,11 @@ export function RouterStateProvider({
 
   return (
     <routerStateOwnerContext.Provider value={owner}>
-      <routerStateScopeContext.Provider value={owner.root}>
-        {children}
-      </routerStateScopeContext.Provider>
+      <routerStateFrameModeContext.Provider value={frameMode}>
+        <routerStateScopeContext.Provider value={owner.root}>
+          {children}
+        </routerStateScopeContext.Provider>
+      </routerStateFrameModeContext.Provider>
     </routerStateOwnerContext.Provider>
   )
 }
@@ -410,15 +430,16 @@ function detachedScope(router: AnyRouter): RouterStateScope {
  */
 export function useFrameMode(router: AnyRouter): boolean {
   // The tree's own answer is taken where there is one, so a reader mounting
-  // after the option moved agrees with the tree that is already staging
+  // after the option moved — or after the provider was handed a router
+  // configured the other way — agrees with the tree that is already staging
   // frames rather than with the option's current value. Read once, at this
-  // component's first render, and kept: a mounted provider can be handed a
-  // router configured the other way, and following the new owner's mode would
-  // change this reader's hook shape underneath it.
+  // component's first render, and kept, so a later swap cannot change this
+  // reader's hook shape underneath it either.
   const owner = React.useContext(routerStateOwnerContext)
+  const treeMode = React.useContext(routerStateFrameModeContext)
   const [mode] = React.useState(() =>
-    owner?.router === router
-      ? owner.frameMode
+    owner?.router === router && treeMode !== undefined
+      ? treeMode
       : Boolean(router.options.experimental_concurrentRenderFrames),
   )
   return mode
