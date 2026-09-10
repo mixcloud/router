@@ -1706,6 +1706,96 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * A fresh provider mount reads the option as it stands, not as it stood the
+   * last time this router was mounted. Owners are cached per router for the
+   * router's lifetime, so seeding the tree's decision from the owner meant a
+   * router first mounted with the option off could never be mounted with it
+   * on again — the second tree would silently stay on the store path.
+   */
+  test('a fresh provider mount reads the option as it now stands', async () => {
+    const gate = deferred()
+    let showLateConsumer!: (show: boolean) => void
+
+    function LateConsumer() {
+      const pathname = useLocation({ select: (l) => l.pathname })
+      return <div data-testid="late">{pathname}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: function RootComponent() {
+        const [show, setShow] = React.useState(false)
+        showLateConsumer = setShow
+        return (
+          <>
+            <Link to="/slow">Slow</Link>
+            {show ? <LateConsumer /> : null}
+            <Outlet />
+          </>
+        )
+      },
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      // Off, so nothing here builds an owner on its own.
+      experimental_concurrentRenderFrames: false,
+    })
+
+    // An owner is only ever built on the frame path — so build one for this
+    // router the way a swap does, under a provider that is already on it.
+    // That is what caches `frameMode: false` against this router for good.
+    const framed = createRouter({
+      routeTree: createRootRoute({ component: () => null }).addChildren([]),
+      experimental_concurrentRenderFrames: true,
+    })
+    const { rerender } = render(
+      <RouterContextProvider router={framed}>
+        <div />
+      </RouterContextProvider>,
+    )
+    rerender(
+      <RouterContextProvider router={router}>
+        <div />
+      </RouterContextProvider>,
+    )
+    cleanup()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    fireEvent.click(screen.getByRole('link', { name: 'Slow' }))
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    expect(router.stores.location.get().pathname).toBe('/slow')
+
+    act(() => showLateConsumer(true))
+
+    // On the frame path, which is what the option now asks for.
+    expect(screen.getByTestId('late').textContent).toBe('/')
+
+    gate.resolve()
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+  })
+
+  /**
    * And the same for a reader that mounts after the provider was handed a
    * router configured the other way. The tree keeps the frame path it mounted
    * with, so it goes on staging frames through the replacement router's

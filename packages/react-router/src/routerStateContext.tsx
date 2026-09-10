@@ -47,15 +47,6 @@ type RouterStateScope = {
 
 type RouterStateOwner = {
   router: AnyRouter
-  /**
-   * Whether this router's tree reads through the frame path, decided when the
-   * owner is built and never revisited. The option is mutable —
-   * `RouterContextProvider` forwards prop updates through `router.update` —
-   * so a component mounting later could otherwise freeze a different answer
-   * than the tree around it, and read the head synchronously inside a route
-   * that is still presenting the committed publication.
-   */
-  frameMode: boolean
   /** The committed scope, for readers outside the route tree. */
   root: RouterStateScope
   /** The presentation scope, for the route subtree. */
@@ -159,7 +150,6 @@ const routerStateFrameModeContext = React.createContext<boolean | undefined>(
  * than keep publishing through the old router's scopes.
  */
 function createOwner(router: AnyRouter): RouterStateOwner {
-  const frameMode = Boolean(router.options.experimental_concurrentRenderFrames)
   const initial = router.stores.__store.get()
   const root = createScope(router, initial)
   const route = createScope(router, initial)
@@ -201,7 +191,6 @@ function createOwner(router: AnyRouter): RouterStateOwner {
 
   const owner: RouterStateOwner = {
     router,
-    frameMode,
     root,
     route,
     get frame() {
@@ -315,9 +304,14 @@ export function RouterStateProvider({
   // router — a test rerender, HMR, switching tenant — and an owner built for
   // the previous one would keep reading and staging that router's state.
   const owner = ownerFor(router)
-  // The tree's decision, taken from the first owner this provider had and
-  // kept for as long as it is mounted.
-  const [frameMode] = React.useState(() => owner.frameMode)
+  // The tree's decision: the option as it stands when this provider mounts,
+  // kept for as long as it is mounted. Read from the router rather than from
+  // the owner, because an owner is cached for its router's lifetime — a
+  // router that was once mounted with the option off would otherwise be
+  // stuck on the store path in every later tree, whatever the option says.
+  const [frameMode] = React.useState(() =>
+    Boolean(router.options.experimental_concurrentRenderFrames),
+  )
 
   useLayoutEffect(() => {
     const subscription = router.stores.__store.subscribe(() => owner.publish())
