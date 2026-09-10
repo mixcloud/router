@@ -47,6 +47,15 @@ type RouterStateScope = {
 
 type RouterStateOwner = {
   router: AnyRouter
+  /**
+   * Whether this router's tree reads through the frame path, decided when the
+   * owner is built and never revisited. The option is mutable —
+   * `RouterContextProvider` forwards prop updates through `router.update` —
+   * so a component mounting later could otherwise freeze a different answer
+   * than the tree around it, and read the head synchronously inside a route
+   * that is still presenting the committed publication.
+   */
+  frameMode: boolean
   /** The committed scope, for readers outside the route tree. */
   root: RouterStateScope
   /** The presentation scope, for the route subtree. */
@@ -135,6 +144,7 @@ const routerStateOwnerContext = React.createContext<
  * than keep publishing through the old router's scopes.
  */
 function createOwner(router: AnyRouter): RouterStateOwner {
+  const frameMode = Boolean(router.options.experimental_concurrentRenderFrames)
   const initial = router.stores.__store.get()
   const root = createScope(router, initial)
   const route = createScope(router, initial)
@@ -176,6 +186,7 @@ function createOwner(router: AnyRouter): RouterStateOwner {
 
   const owner: RouterStateOwner = {
     router,
+    frameMode,
     root,
     route,
     get frame() {
@@ -398,10 +409,14 @@ function detachedScope(router: AnyRouter): RouterStateScope {
  * keeps the isolation behaviour it mounted with.
  */
 export function useFrameMode(router: AnyRouter): boolean {
+  // The tree's own answer wins where there is one, so every reader under a
+  // provider agrees with it however the option moves afterwards. Both hooks
+  // run unconditionally; only the choice between their values is conditional.
+  const owner = React.useContext(routerStateOwnerContext)
   const [mode] = React.useState(() =>
     Boolean(router.options.experimental_concurrentRenderFrames),
   )
-  return mode
+  return owner?.router === router ? owner.frameMode : mode
 }
 
 export function useRouterStateSelector<TSelected>(

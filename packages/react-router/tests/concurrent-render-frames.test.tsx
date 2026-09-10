@@ -1496,6 +1496,80 @@ describe('concurrent render frames', () => {
     )
   })
 
+
+  /**
+   * The option is mutable: `RouterContextProvider` forwards prop updates
+   * through `router.update`. So freezing the decision per component is not
+   * enough — a component mounting after the option changed would freeze the
+   * new answer while the tree around it still stages and acknowledges frames,
+   * and its subscription would read the head synchronously inside a route
+   * that is still presenting the committed publication.
+   */
+  test('a reader mounted after the option changed follows the provider', async () => {
+    const gate = deferred()
+    let showLateConsumer!: (show: boolean) => void
+
+    function LateConsumer() {
+      const pathname = useLocation({ select: (l) => l.pathname })
+      return <div data-testid="late">{pathname}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: function RootComponent() {
+        const [show, setShow] = React.useState(false)
+        showLateConsumer = setShow
+        return (
+          <>
+            <Link to="/slow">Slow</Link>
+            {show ? <LateConsumer /> : null}
+            <Outlet />
+          </>
+        )
+      },
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // Turn the option off underneath the mounted tree, which keeps staging
+    // frames because its owner was built with it on.
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: false,
+      })
+    })
+
+    fireEvent.click(screen.getByRole('link', { name: 'Slow' }))
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    expect(router.stores.location.get().pathname).toBe('/slow')
+
+    act(() => showLateConsumer(true))
+
+    // Follows the provider, not the option as it now reads: the route on
+    // screen is still `/`.
+    expect(screen.getByTestId('late').textContent).toBe('/')
+
+    gate.resolve()
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
