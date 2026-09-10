@@ -272,8 +272,36 @@ export function RouterStateStorePath({
  * mount: a provider handed a different router has to build a new one rather
  * than keep publishing through the old router's scopes.
  */
+/**
+ * The publication a brand-new owner starts from.
+ *
+ * An owner can be built while a navigation is already in flight — a provider
+ * mounted mid-navigation, or a router that committed its matches on the store
+ * path before the option was turned on. The head is not a snapshot of one
+ * publication at that moment: `location` is already the destination while
+ * `matches` are still the ones on screen, which is the second half of what
+ * this option exists to fix. Seeding both scopes from it presents the
+ * successor's URL beside the previous route's content for the whole load.
+ *
+ * `resolvedLocation` is the location the committed matches were resolved for,
+ * so pairing the two gives back a coherent publication. That is also exactly
+ * what a tree that stayed mounted through the same navigation presents: the
+ * route and URL it is showing, until the navigation commits. Mounting midway
+ * should not be a different experience from having been there.
+ */
+function initialFrame(router: AnyRouter): RouterRenderFrame {
+  const head = router.stores.__store.get()
+  const resolved = router.stores.resolvedLocation.get()
+  if (!resolved || resolved.href === head.location.href) {
+    return head
+  }
+  // Same matches, so the same route content and the same identity — only the
+  // location is put back to the one those matches belong to.
+  return { ...head, location: resolved }
+}
+
 function createOwner(router: AnyRouter): RouterStateOwner {
-  const initial = router.stores.__store.get()
+  const initial = initialFrame(router)
   const root = createScope(router, initial)
   const route = createScope(router, initial)
   let staging = false

@@ -2724,6 +2724,103 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * A fresh owner is seeded from a coherent publication.
+   *
+   * An owner can be built while a navigation is already in flight: a router
+   * that committed its matches on the store path, then had the option turned
+   * on, then started navigating before a provider mounted. The head at that
+   * moment is not a snapshot of one publication — `location` is the
+   * destination while `matches` are still the ones on screen — so seeding both
+   * scopes from it presents the successor's URL beside the previous route's
+   * content for the whole load.
+   *
+   * The store path shows that pair too, so this is not about beating it. It is
+   * about the frame path agreeing with itself: a tree that stays mounted
+   * through a navigation presents the route and URL it is showing until the
+   * navigation commits, and mounting midway should not differ. `resolvedLocation`
+   * is the location the committed matches were resolved for, which pairs them
+   * back up.
+   */
+  test('an owner built mid-navigation seeds a coherent publication', async () => {
+    const gate = deferred()
+
+    function Probe() {
+      const value = useRouterState({
+        select: (s) =>
+          `${s.location.pathname}|${s.matches.map((m) => m.routeId).join('+')}`,
+      })
+      return <div data-testid="probe">{value}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Probe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      // The store path commits matches without ever building an owner, which
+      // is what leaves a later mount to build a fresh one.
+      experimental_concurrentRenderFrames: false,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    first.unmount()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+
+    // In flight with nothing mounted, so the next provider builds the owner.
+    const navigation = router.navigate({ to: '/slow' })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(router.stores.location.get().pathname).toBe('/slow')
+    expect(router.stores.matches.get().map((m) => m.routeId)).toEqual([
+      '__root__',
+      '/',
+    ])
+
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The route on screen and the URL it belongs to, not a mixture.
+    expect(screen.getByTestId('probe')).toHaveTextContent('/|__root__+/')
+
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+    expect(screen.getByTestId('probe')).toHaveTextContent('/slow|__root__+/slow')
+  })
+
+  /**
    * A store-path provider nested under a frame-path one owns no frames.
    *
    * `Transitioner` takes its owner from context without consulting the mode,
