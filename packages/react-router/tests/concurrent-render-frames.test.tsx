@@ -1181,6 +1181,101 @@ describe('concurrent render frames', () => {
 
 
 
+
+  /**
+   * The same cache, mutated by the render rather than by the probe. A consumer
+   * that sits *above* the changing route renders in the staged tree too, so
+   * its selector runs against the staged publication — and if that render is
+   * discarded because something below it suspends, the cache is left
+   * describing a selection nobody ever saw.
+   */
+  test('a discarded staged render does not disturb a structural-sharing selection', async () => {
+    let releaseNext: () => void = () => {}
+    let nextReady = false
+    const nextGate = new Promise<void>((resolve) => {
+      releaseNext = () => {
+        nextReady = true
+        resolve()
+      }
+    })
+
+    function NextPage() {
+      if (!nextReady) {
+        throw nextGate
+      }
+      return <h1>Next Title</h1>
+    }
+
+    // Recorded from an effect, so only renders that *committed* count. A
+    // render-phase push would also record the staged render this test is
+    // arranging to have discarded, which is not what is on screen.
+    const committedSelections: Array<{ pathname: string }> = []
+
+    // In the root component, so it renders in the staged tree as well as the
+    // visible one — unlike a consumer inside the route being replaced.
+    function Shell() {
+      const [bumps, setBumps] = React.useState(0)
+      const selected = useRouterState({
+        structuralSharing: true,
+        select: (state) => ({ pathname: state.location.pathname }),
+      })
+      React.useEffect(() => {
+        committedSelections.push(selected)
+      }, [selected])
+      return (
+        <>
+          <button type="button" onClick={() => setBumps((n) => n + 1)}>
+            Bump
+          </button>
+          <div data-testid="shell">{`${selected.pathname}|${bumps}`}</div>
+          <Outlet />
+        </>
+      )
+    }
+
+    const rootRoute = createRootRoute({ component: Shell })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      component: NextPage,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, nextRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    const onScreen = committedSelections.at(-1)!
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({ to: '/next' })
+    })
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/next'),
+    )
+    // The staged tree is suspended below the shell, so nothing it rendered has
+    // committed.
+    expect(screen.getByRole('heading', { name: 'Index Title' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bump' }))
+    expect(screen.getByTestId('shell').textContent).toBe('/|1')
+    expect(committedSelections.at(-1)).toBe(onScreen)
+
+    await act(async () => {
+      releaseNext()
+      await nextGate
+    })
+    await navigation
+    await waitFor(() => screen.getByRole('heading', { name: 'Next Title' }))
+  })
+
   /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a

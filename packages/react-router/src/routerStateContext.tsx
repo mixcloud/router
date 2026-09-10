@@ -447,12 +447,27 @@ export function useRouterStateSelector<TSelected>(
   // earlier one commits, and the earlier tree's effect would then record a
   // selection that was never on its screen — enough to skip a re-render it
   // needed.
+  //
+  // A structural-sharing selector caches its last result to keep the selection
+  // referentially stable, and this render may be one of the discarded ones —
+  // so the cache is put back to what committed, and this render's value is
+  // published only once it commits, below. Left in place, a discarded render's
+  // write describes a selection nobody saw: the still-visible tree's next
+  // render would compare its own frame against that, find it different, and
+  // hand back a fresh object, taking every memoized child with it. The
+  // restore is a write-then-restore of the same ref, so it leaves render as
+  // pure as it found it.
+  const cachedBeforeRender = selector.snapshotCache?.()
   const rendered = selector(resolveFrame(scope, presenting.frameId))
+  selector.restoreCache?.(cachedBeforeRender)
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useLayoutEffect(() => {
     committed.current = { value: rendered, selector, compare }
     presentingRef.current = presenting
+    // This render is on screen now, so its selection is the one the next
+    // render should keep stable.
+    selector.restoreCache?.(rendered)
   })
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
