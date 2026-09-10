@@ -302,6 +302,20 @@ function createOwner(router: AnyRouter): RouterStateOwner {
     },
     publish: () => {
       const head = router.stores.__store.get()
+      if (pending && !staging && head.location.href !== pending.location.href) {
+        // Superseded before anything rendered it. A staged frame is offered
+        // to a tree that may be suspended, and a replacement navigation moves
+        // the head without publishing anything of its own until its own load
+        // resolves — so the first tree could finish suspending inside that
+        // window and commit a destination the URL had already left.
+        //
+        // Nothing has committed it, so dropping it costs nothing: consumers
+        // fall back to the publication they are already presenting, which is
+        // the route still on screen, and the successor stages its own frame
+        // when it is ready.
+        owner.cancel()
+        return
+      }
       if (staging || pending) {
         syncProgress(head)
         return

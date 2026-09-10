@@ -1,6 +1,12 @@
 import { describe, expect, test, vi } from 'vitest'
 import { createMemoryHistory } from '@tanstack/history'
-import { BaseRootRoute, BaseRoute } from '../src'
+import {
+  BaseRootRoute,
+  BaseRoute,
+  createNonReactiveMutableStore,
+  createNonReactiveReadonlyStore,
+} from '../src'
+import { createRouterStores } from '../src/stores'
 import { createTestRouter } from './routerTestUtils'
 
 function deferred<T = void>() {
@@ -49,6 +55,58 @@ describe('render frames', () => {
 
     expect(second).toBeGreaterThan(first)
     expect(third).toBeGreaterThan(second)
+  })
+
+  /**
+   * The SSR store is non-reactive: its getter runs again for every reader. So
+   * counting reads rather than publications gave two consumers in one server
+   * render different identities for the same route content, and anything an
+   * application derived from one would differ between the server and the
+   * client, whose store caches the assembly.
+   */
+  test('repeated reads of unchanged route content share an identity', () => {
+    // Built with the SSR config on purpose: the client store caches its
+    // assembly, so only the non-reactive one reruns the getter per reader.
+    const stores = createRouterStores(
+      createMemoryHistory({ initialEntries: ['/about'] }).location as any,
+      {
+        createMutableStore: createNonReactiveMutableStore,
+        createReadonlyStore: createNonReactiveReadonlyStore,
+        batch: (fn) => fn(),
+      },
+    )
+
+    const first = stores.__store.get()
+    const second = stores.__store.get()
+    const third = stores.__store.get()
+
+    expect(second.frameId).toBe(first.frameId)
+    expect(third.frameId).toBe(first.frameId)
+
+    // And it still advances when the content does.
+    stores.setMatches([
+      { id: '__root__', routeId: '__root__' } as any,
+    ])
+    expect(stores.__store.get().frameId).toBeGreaterThan(first.frameId)
+  })
+
+  /**
+   * Progress is not route content, so it does not advance the identity — the
+   * contract `RouterState` documents, and what lets the adapter overlay
+   * `status` onto a publication a component is already presenting.
+   */
+  test('progress alone does not advance the frame identity', async () => {
+    const router = createRouter()
+    await router.navigate({ to: '/about' })
+
+    const before = router.stores.__store.get().frameId
+    router.stores.status.set('pending')
+    const during = router.stores.__store.get()
+    router.stores.status.set('idle')
+
+    expect(during.frameId).toBe(before)
+    expect(during.status).toBe('pending')
+    expect(during.isLoading).toBe(true)
   })
 
   test('a frame is a complete, self-consistent snapshot', async () => {

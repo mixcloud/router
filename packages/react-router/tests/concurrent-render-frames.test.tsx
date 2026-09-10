@@ -2138,6 +2138,83 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * A staged frame is offered to a tree that may be suspended, and a
+   * replacement navigation moves the head without publishing anything of its
+   * own until its load resolves. The first tree could finish suspending
+   * inside that window and commit a destination the URL had already left —
+   * the acknowledgement matched on frame identity alone, and that identity
+   * was still the one the owner was holding.
+   */
+  test('a superseded frame does not commit while its tree is suspended', async () => {
+    const suspense = deferred()
+    const slowLoader = deferred()
+    let thrown = false
+
+    function SuspendsOnce() {
+      if (!thrown) {
+        thrown = true
+        throw suspense.promise
+      }
+      return <h1>First Title</h1>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const firstRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/first',
+      component: () => <SuspendsOnce />,
+    })
+    const secondRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/second',
+      loader: () => slowLoader.promise,
+      component: () => <h1>Second Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, firstRoute, secondRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // Stages a frame whose tree suspends, so nothing commits it.
+    const first = router.navigate({ to: '/first' })
+    first.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The replacement moves the head. Its loader is slow and it has no
+    // pending component, so it publishes nothing for a while.
+    const second = router.navigate({ to: '/second' })
+    second.catch(() => {})
+    await waitFor(() =>
+      expect(router.stores.location.get().pathname).toBe('/second'),
+    )
+
+    // The first tree finishes suspending inside that window.
+    suspense.resolve()
+    await act(async () => {
+      await suspense.promise
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The route the URL left must not be on screen.
+    expect(screen.queryByRole('heading', { name: 'First Title' })).toBeNull()
+
+    slowLoader.resolve()
+    await waitFor(() => screen.getByRole('heading', { name: 'Second Title' }))
+  })
+
+  /**
    * A selector is user code, and the frame path runs it outside React's
    * render — from the Router's `startTransition`, to decide whether a
    * consumer's selection changed. A throw there reaches no error boundary and
