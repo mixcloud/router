@@ -568,6 +568,114 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
     // Never backwards, and never a generation skipped.
     expect(presented).toEqual(['1', '2', '3'])
   })
+
+  /**
+   * A publication that is re-entered stages nothing.
+   *
+   * A frame is assembled from the aggregate store *after* the publication
+   * callback returns, and that callback ends by emitting `onLoad` and
+   * `onBeforeRouteMount` — user code, which may navigate. It does so
+   * synchronously: the location moves to the successor while the matches this
+   * publication just committed are still in the store, so the aggregate read
+   * afterwards pairs one route's matches with another route's URL. Nothing
+   * downstream can reject that frame either, because `isSuperseded` compares
+   * its location against the head and the head is exactly where the successor
+   * put it.
+   *
+   * The store path shows that pair too — it reads the live atoms, so it is
+   * transiently inconsistent by construction, and that is upstream behaviour
+   * this option does not change. What the frame path must not do is *commit*
+   * it, because a frame is supposed to be a snapshot of one publication and
+   * this one is a snapshot of no publication at all. Both arms are asserted so
+   * the difference is the contract.
+   */
+  test('a publication re-entered by a navigation stages no frame', async () => {
+    const slow = deferred()
+    const presented: Array<string> = []
+
+    function Probe() {
+      const value = useRouterState({
+        select: (s) =>
+          `${s.location.pathname}|${s.matches.map((m) => m.routeId).join('+')}`,
+      })
+      presented.push(value)
+      return <div data-testid="probe">{value}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Probe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const aRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/a',
+      component: () => <h1>A Title</h1>,
+    })
+    const bRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/b',
+      loader: () => slow.promise,
+      component: () => <h1>B Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, aRoute, bRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames,
+    })
+
+    // The listener that re-enters, exactly where `load-client` emits it.
+    let navigated = false
+    router.subscribe('onLoad', (event) => {
+      if (navigated || event.toLocation.pathname !== '/a') {
+        return
+      }
+      navigated = true
+      const successor = router.navigate({ to: '/b' })
+      successor.catch(() => {})
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    presented.length = 0
+
+    const toA = router.navigate({ to: '/a' })
+    toA.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The head is at `/b` on both paths, with `/b` still loading.
+    expect(router.stores.location.get().pathname).toBe('/b')
+
+    if (experimental_concurrentRenderFrames) {
+      // A coherent publication — the one still on screen — rather than the
+      // successor's URL wearing the previous route's matches.
+      expect(screen.getByTestId('probe')).toHaveTextContent('/|__root__+/')
+      expect(presented).not.toContain('/b|__root__+/a')
+    } else {
+      // Upstream behaviour, asserted so the difference is deliberate.
+      expect(screen.getByTestId('probe')).toHaveTextContent('/b|__root__+/a')
+    }
+
+    // Both converge once the successor's load resolves.
+    slow.resolve()
+    await act(async () => {
+      await slow.promise
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'B Title' }))
+    expect(screen.getByTestId('probe')).toHaveTextContent('/b|__root__+/b')
+  })
 })
 
 describe('concurrent render frames', () => {

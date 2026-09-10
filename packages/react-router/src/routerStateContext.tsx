@@ -66,7 +66,11 @@ type RouterStateOwner = {
    */
   pending: RouterRenderFrame | undefined
   begin: () => void
-  stage: (frame: RouterRenderFrame) => RouterRenderFrame
+  /**
+   * Offer a frame for this publication, or `undefined` when the publication
+   * was re-entered and the aggregate no longer describes one of them.
+   */
+  stage: (frame: RouterRenderFrame) => RouterRenderFrame | undefined
   cancel: () => void
   commit: (frame: RouterRenderFrame) => boolean
   publish: () => void
@@ -244,6 +248,7 @@ function createOwner(router: AnyRouter): RouterStateOwner {
   const route = createScope(router, initial)
   let staging = false
   let pending: RouterRenderFrame | undefined
+  let publicationTx: AnyRouter['_tx']
 
   // Navigation progress is not route content. Both scopes stay on the route
   // they are presenting, but their status tracks the head, so progress UI —
@@ -302,9 +307,28 @@ function createOwner(router: AnyRouter): RouterStateOwner {
     },
     begin: () => {
       staging = true
+      // The load transaction this publication belongs to. A frame is only
+      // assembled after the publication callback returns, and the callback
+      // ends by emitting `onLoad` and `onBeforeRouteMount` — user code, which
+      // may navigate. Such a navigation moves the location synchronously
+      // while the matches this publication just committed are still in the
+      // store, so the aggregate read afterwards is not a snapshot of any one
+      // publication: it pairs this route's matches with the successor's URL.
+      // The transaction identity is what tells them apart, and is the same
+      // thing `load-client` itself checks between those two emits.
+      publicationTx = router._tx
     },
     stage: (nextFrame) => {
       staging = false
+      if (router._tx !== publicationTx) {
+        // Re-entered. The aggregate belongs to no single publication, and
+        // `isSuperseded` cannot reject it later because its location *is*
+        // the head — that is precisely what the successor moved it to. Drop
+        // it: consumers keep the last coherent publication, and the
+        // successor stages its own frame when its load resolves.
+        owner.cancel()
+        return undefined
+      }
       pending = nextFrame
       // Only the route subtree is offered a staged publication, and only the
       // render that accepts it presents it. Readers outside that subtree, and
