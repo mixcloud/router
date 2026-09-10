@@ -53,6 +53,18 @@ type RouterStateOwner = {
   route: RouterStateScope
   /** The committed frame. */
   frame: RouterRenderFrame
+  /**
+   * The staged frame still waiting to be acknowledged, if any.
+   *
+   * An owner outlives the tree that was going to acknowledge its staged
+   * frame — the provider can unmount mid-navigation and mount again on the
+   * same router. A fresh `Matches` seeds its consumers from `staged`, so it
+   * renders that frame while acknowledging against the committed one, and
+   * nothing ever settles: the owner stays gated on `pending` and the router
+   * stays `pending` with it. Exposing it lets the new tree adopt the frame it
+   * is already rendering.
+   */
+  pending: RouterRenderFrame | undefined
   begin: () => void
   stage: (frame: RouterRenderFrame) => RouterRenderFrame
   cancel: () => void
@@ -195,6 +207,9 @@ function createOwner(router: AnyRouter): RouterStateOwner {
     route,
     get frame() {
       return root.committed
+    },
+    get pending() {
+      return pending
     },
     begin: () => {
       staging = true

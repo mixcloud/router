@@ -70,9 +70,21 @@ export function Matches() {
   // clobber the other, and reading only this router's slot keeps a foreign
   // frame out of the tree — `frameId` counts per router, so a collision could
   // otherwise commit the wrong router's snapshot outright.
+  //
+  // Seeded from the owner's in-flight frame, for the case where this tree is
+  // not the one that was offered it: a provider that unmounts mid-navigation
+  // and mounts again on the same router hands its cached owner to a fresh
+  // `Matches`, whose consumers seed from the staged publication. Without
+  // adopting it here, this tree renders that frame while acknowledging
+  // against the committed one, so the acknowledgement never settles and the
+  // navigation stays pending for good.
   const [queuedFrames, setQueuedFrames] = React.useState<
     ReadonlyMap<AnyRouter, RouterRenderFrame>
-  >(() => new Map())
+  >(() =>
+    routerStateOwner?.pending
+      ? new Map([[router, routerStateOwner.pending]])
+      : new Map(),
+  )
   const renderFrame = queuedFrames.get(router)
   // Keep only this router's slot. A dispatch that outlived its router can
   // insert one for a router this tree will never render again, and nothing

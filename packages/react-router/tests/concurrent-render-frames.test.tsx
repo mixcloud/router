@@ -336,6 +336,72 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
     gate.resolve()
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
   })
+
+  /**
+   * A provider can unmount while a navigation is loading and mount again on
+   * the same router. The frame path caches an owner per router, so the second
+   * tree inherits the first one's in-flight frame — which the first tree was
+   * going to acknowledge and never did.
+   *
+   * A fresh consumer seeds from `staged ?? committed`, so that tree renders
+   * the staged frame; acknowledging against the committed one instead left
+   * the owner gated on `pending` for good and the router `pending` with it,
+   * so progress UI stayed on until something else navigated. Asserting both
+   * paths pins the frame path back to what the store path does.
+   *
+   * The interrupted navigation's own promise never settles on either path —
+   * nothing is left to render it — which is why this asserts on the router's
+   * status rather than awaiting it.
+   */
+  test('a provider remounted mid-navigation settles', async () => {
+    const gate = deferred()
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Link to="/slow">Slow</Link>
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    const navigation = router.navigate({ to: '/slow' })
+    navigation.catch(() => {})
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+
+    // The tree goes away mid-navigation, and the load finishes with nothing
+    // left to render it — that is what leaves the frame in flight.
+    cleanup()
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+
+    // Then it comes back on the same router.
+    render(<RouterProvider router={router} />)
+
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+    await waitFor(() => expect(router.stores.status.get()).toBe('idle'))
+  })
 })
 
 describe('concurrent render frames', () => {
