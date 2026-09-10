@@ -58,20 +58,36 @@ declare module '@tanstack/router-core' {
 export function Matches() {
   const router = useRouter()
   const routerStateOwner = useRouterStateOwner()
-  // Tagged with the router that produced it. A router swapped under a mounted
-  // provider keeps its own navigation in flight, along with the
-  // `startTransition` override holding this dispatch, so its staged frame can
-  // still arrive here afterwards. Untagged it would mask the current router's
-  // own frame — and because `frameId` counts per router, a collision could
-  // commit the wrong router's snapshot outright.
-  const [queuedFrame, setQueuedFrame] = React.useState<
-    { router: AnyRouter; frame: RouterRenderFrame } | undefined
-  >()
-  const renderFrame =
-    queuedFrame?.router === router ? queuedFrame.frame : undefined
+  // Queued per router, because a router swapped under a mounted provider keeps
+  // its own navigation in flight — along with the `startTransition` override
+  // holding this dispatch — so its staged frame can still arrive here
+  // afterwards.
+  //
+  // One slot with a tag was not enough: the write is what the stale dispatch
+  // reaches, so it replaced the current router's entry with its own, and
+  // filtering on read then left that router with no queued frame at all. Its
+  // acknowledgement would never settle. A slot per router means neither can
+  // clobber the other, and reading only this router's slot keeps a foreign
+  // frame out of the tree — `frameId` counts per router, so a collision could
+  // otherwise commit the wrong router's snapshot outright.
+  const [queuedFrames, setQueuedFrames] = React.useState<
+    ReadonlyMap<AnyRouter, RouterRenderFrame>
+  >(() => new Map())
+  const renderFrame = queuedFrames.get(router)
   const setRenderFrame = React.useCallback(
     (frame: RouterRenderFrame | undefined) =>
-      setQueuedFrame(frame ? { router, frame } : undefined),
+      setQueuedFrames((previous) => {
+        if (previous.get(router) === frame) {
+          return previous
+        }
+        const next = new Map(previous)
+        if (frame) {
+          next.set(router, frame)
+        } else {
+          next.delete(router)
+        }
+        return next
+      }),
     [router],
   )
   const activeFrame = renderFrame ?? routerStateOwner?.frame
