@@ -409,14 +409,19 @@ function detachedScope(router: AnyRouter): RouterStateScope {
  * keeps the isolation behaviour it mounted with.
  */
 export function useFrameMode(router: AnyRouter): boolean {
-  // The tree's own answer wins where there is one, so every reader under a
-  // provider agrees with it however the option moves afterwards. Both hooks
-  // run unconditionally; only the choice between their values is conditional.
+  // The tree's own answer is taken where there is one, so a reader mounting
+  // after the option moved agrees with the tree that is already staging
+  // frames rather than with the option's current value. Read once, at this
+  // component's first render, and kept: a mounted provider can be handed a
+  // router configured the other way, and following the new owner's mode would
+  // change this reader's hook shape underneath it.
   const owner = React.useContext(routerStateOwnerContext)
   const [mode] = React.useState(() =>
-    Boolean(router.options.experimental_concurrentRenderFrames),
+    owner?.router === router
+      ? owner.frameMode
+      : Boolean(router.options.experimental_concurrentRenderFrames),
   )
-  return owner?.router === router ? owner.frameMode : mode
+  return mode
 }
 
 export function useRouterStateSelector<TSelected>(

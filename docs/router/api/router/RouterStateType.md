@@ -9,6 +9,7 @@ status.
 
 ```tsx
 type RouterState = {
+  frameId: number
   status: 'pending' | 'idle'
   isLoading: boolean
   matches: Array<RouteMatch>
@@ -20,6 +21,17 @@ type RouterState = {
 ## RouterState properties
 
 The `RouterState` type contains all of the properties that are available on the router state.
+
+### `frameId` property
+
+- Type: `number`
+- Identity for one atomically assembled snapshot of the router state. Every
+  snapshot the router publishes gets a new, larger value; two reads that return
+  the same `frameId` are reads of the same snapshot.
+- It identifies a snapshot rather than a navigation: a single navigation
+  publishes several, and the value carries no meaning beyond comparison and
+  ordering. Do not derive a location, a match, or a count of navigations from
+  it.
 
 ### `status` property
 

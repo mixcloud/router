@@ -872,6 +872,53 @@ describe('concurrent render frames', () => {
     expect(screen.getByTestId('pathname')).toHaveTextContent('/')
   })
 
+  /**
+   * The other half of the same hazard, with the provider's router changing
+   * instead of the reader's argument. A mounted provider handed a router
+   * configured the other way installs an owner whose frame mode disagrees
+   * with the one the tree mounted on, and a reader that took the tree's
+   * answer per render would change hook shape underneath itself. The mounted
+   * path has to survive the swap even though the mode it names is no longer
+   * the one the current router asks for.
+   */
+  test('a provider handed a router configured the other way keeps the mounted path', async () => {
+    const framed = makeRouter()
+    // Frames off, and somewhere else, so the assertion says which router was
+    // read as well as that the swap did not crash.
+    const plain = makeRouter(false, '/posts')
+
+    function Probe() {
+      const pathname = useRouterState({
+        select: (state) => state.location.pathname,
+      })
+      return <div data-testid="pathname">{pathname}</div>
+    }
+
+    const { rerender } = render(
+      <RouterContextProvider router={framed}>
+        <Probe />
+      </RouterContextProvider>,
+    )
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+
+    // Crosses the option itself: the reader mounted on the frame path and the
+    // new owner's mode is false.
+    rerender(
+      <RouterContextProvider router={plain}>
+        <Probe />
+      </RouterContextProvider>,
+    )
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/posts')
+
+    // And back, so neither direction of the swap decides hook order.
+    rerender(
+      <RouterContextProvider router={framed}>
+        <Probe />
+      </RouterContextProvider>,
+    )
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/')
+  })
+
 
   /**
    * A link's `href` is built from the location it is rendered against, which
@@ -964,7 +1011,10 @@ describe('concurrent render frames', () => {
           <Link
             to="/posts"
             search={{ page: 9 }}
-            state={(prev: any) => ({ from: prev.__TSR_index })}
+            // Cast: a functional `state` updater is typed to return a full
+            // `HistoryState`, and this one deliberately returns only the field
+            // the assertion reads.
+            state={((prev: any) => ({ from: prev.__TSR_index })) as any}
           >
             Fixed target
           </Link>

@@ -40,7 +40,9 @@ test('hydration does not remount the route tree', async () => {
   function IndexPage() {
     React.useEffect(() => {
       lifecycle.push('mount')
-      return () => lifecycle.push('unmount')
+      return () => {
+        lifecycle.push('unmount')
+      }
     }, [])
     return <h1>Index Title</h1>
   }
