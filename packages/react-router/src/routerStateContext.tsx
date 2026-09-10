@@ -326,6 +326,22 @@ function createOwner(router: AnyRouter): RouterStateOwner {
       if (pending?.frameId !== nextFrame.frameId) {
         return false
       }
+      if (isSuperseded(nextFrame, router.stores.__store.get())) {
+        // The head left this frame and nothing dropped it. Cancelling runs
+        // from the store subscription the provider installs in a layout
+        // effect, and layout effects run bottom-up: a tree that adopted the
+        // frame during a render React then yielded out of reaches this
+        // acknowledgement before that subscription exists, so a navigation
+        // starting inside the gap moves the head unobserved.
+        //
+        // The frame identity alone cannot tell: it still matches `pending`,
+        // because the frame is genuinely the one that was staged. Committing
+        // it here would put the route the user has already left into both
+        // scopes, and clear `pending` so nothing could withdraw it
+        // afterwards. Cancel instead, exactly as `publish` would have.
+        owner.cancel()
+        return false
+      }
       pending = undefined
       // The staged publication is now what everyone has committed, so the
       // staged slot empties and both scopes resolve to it.

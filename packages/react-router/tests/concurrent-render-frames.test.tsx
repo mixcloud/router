@@ -2441,4 +2441,83 @@ describe('concurrent render frames', () => {
     await waitFor(() => screen.getByTestId('caught'))
     expect(errors).toContain('selector boom')
   })
+
+  /**
+   * The acknowledgement boundary revalidates the head.
+   *
+   * `commit` matches the frame it is handed against `pending` by identity,
+   * and the frame satisfies that — it really is the one that was staged.
+   * What identity cannot say is whether the head is still there. Withdrawing
+   * a superseded frame runs from the store subscription the provider installs
+   * in a layout effect, and layout effects run bottom-up, so a tree that
+   * adopted the frame during a render React then yielded out of reaches this
+   * boundary before that subscription exists: a navigation starting inside
+   * the gap moves the head with nothing watching.
+   *
+   * That interleaving needs a real concurrent yield, which `act` does not
+   * produce. The state it leaves behind is what matters and is exact — a
+   * pending frame the head has left, and no publication in between for a
+   * subscription to have noticed — so the boundary is driven directly.
+   */
+  test('an acknowledgement for a frame the head has left is refused', async () => {
+    let owner!: NonNullable<ReturnType<typeof useRouterStateOwner>>
+
+    const rootRoute = createRootRoute({
+      component: function RootComponent() {
+        owner = useRouterStateOwner()!
+        return <Outlet />
+      },
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      component: () => <h1>Posts Title</h1>,
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // A genuine frame, for a location the head then leaves.
+    let toPosts!: Promise<void>
+    act(() => {
+      toPosts = router.navigate({ to: '/posts' })
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts Title' }))
+    await toPosts
+    const postsFrame = owner.frame
+    let toIndex!: Promise<void>
+    act(() => {
+      toIndex = router.navigate({ to: '/' })
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    await toIndex
+
+    // Staged without moving the store, which is the gap: nothing publishes,
+    // so nothing withdraws it.
+    act(() => {
+      owner.begin()
+      owner.stage(postsFrame)
+    })
+
+    let accepted: boolean | undefined
+    act(() => {
+      accepted = owner.commit(postsFrame)
+    })
+
+    expect(accepted).toBe(false)
+    expect(owner.frame.location.pathname).toBe('/')
+    // And the refusal withdraws it rather than leaving it on offer, so the
+    // route subtree falls back to the route that is still on screen.
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    expect(screen.queryByRole('heading', { name: 'Posts Title' })).toBeNull()
+  })
 })
