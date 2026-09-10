@@ -150,9 +150,44 @@ const routerStateOwnerContext = React.createContext<
  * subscribes to the head inside a tree that is still presenting the committed
  * publication.
  */
-const routerStateFrameModeContext = React.createContext<boolean | undefined>(
-  undefined,
-)
+type RouterStateFrameMode = {
+  /** The router this tree is rendering. */
+  router: AnyRouter
+  /** The decision that tree mounted with. */
+  frameMode: boolean
+}
+
+const routerStateFrameModeContext = React.createContext<
+  RouterStateFrameMode | undefined
+>(undefined)
+
+/**
+ * Publish a tree's frame-path decision without owning frames for it.
+ *
+ * The store path needs this too. Only the frame path builds an owner, so
+ * without publishing the decision on both arms a reader mounting after the
+ * option changed would read the option afresh and freeze the other answer
+ * from the tree around it.
+ */
+export function RouterStateFrameMode({
+  router,
+  frameMode,
+  children,
+}: {
+  router: AnyRouter
+  frameMode: boolean
+  children: React.ReactNode
+}) {
+  const value = React.useMemo(
+    () => ({ router, frameMode }),
+    [router, frameMode],
+  )
+  return (
+    <routerStateFrameModeContext.Provider value={value}>
+      {children}
+    </routerStateFrameModeContext.Provider>
+  )
+}
 
 /**
  * Everything a router's publications need, closed over that one router.
@@ -336,11 +371,11 @@ export function RouterStateProvider({
 
   return (
     <routerStateOwnerContext.Provider value={owner}>
-      <routerStateFrameModeContext.Provider value={frameMode}>
+      <RouterStateFrameMode router={router} frameMode={frameMode}>
         <routerStateScopeContext.Provider value={owner.root}>
           {children}
         </routerStateScopeContext.Provider>
-      </routerStateFrameModeContext.Provider>
+      </RouterStateFrameMode>
     </routerStateOwnerContext.Provider>
   )
 }
@@ -444,11 +479,10 @@ export function useFrameMode(router: AnyRouter): boolean {
   // frames rather than with the option's current value. Read once, at this
   // component's first render, and kept, so a later swap cannot change this
   // reader's hook shape underneath it either.
-  const owner = React.useContext(routerStateOwnerContext)
-  const treeMode = React.useContext(routerStateFrameModeContext)
+  const tree = React.useContext(routerStateFrameModeContext)
   const [mode] = React.useState(() =>
-    owner?.router === router && treeMode !== undefined
-      ? treeMode
+    tree?.router === router
+      ? tree.frameMode
       : Boolean(router.options.experimental_concurrentRenderFrames),
   )
   return mode

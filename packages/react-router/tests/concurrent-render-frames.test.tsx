@@ -10,6 +10,7 @@ import {
 import * as React from 'react'
 import {
   RouterStateProvider,
+  useFrameMode,
   useRouterStateOwner,
 } from '../src/routerStateContext'
 import {
@@ -1905,6 +1906,64 @@ describe('concurrent render frames', () => {
 
     gate.resolve()
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+  })
+
+  /**
+   * The store path publishes its decision too. Only the frame path builds an
+   * owner, so when the tree's answer was carried on the owner there was
+   * nothing to read on the other arm: a reader mounting after the option was
+   * turned *on* under a store-path tree froze `true` from the option and took
+   * the frame path while `Matches` and the `Transitioner` around it stayed on
+   * the store path.
+   *
+   * Harmless in what it reads — with no owner it resolves to the router's
+   * head, which is what the store path reads anyway — but the tree should
+   * have one answer, and this is the same invariant as the arm above.
+   */
+  test('a reader mounted after the option was turned on follows the store-path tree', async () => {
+    const modes: Array<boolean> = []
+
+    function ModeProbe() {
+      modes.push(useFrameMode(router))
+      return null
+    }
+
+    let showProbe!: (show: boolean) => void
+    const rootRoute = createRootRoute({
+      component: function RootComponent() {
+        const [show, setShow] = React.useState(false)
+        showProbe = setShow
+        return (
+          <>
+            {show ? <ModeProbe /> : null}
+            <Outlet />
+          </>
+        )
+      },
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute]),
+      experimental_concurrentRenderFrames: false,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // Turned on underneath the mounted tree, which stays on the store path.
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+    act(() => showProbe(true))
+
+    expect(modes).toEqual([false])
   })
 
   /**
