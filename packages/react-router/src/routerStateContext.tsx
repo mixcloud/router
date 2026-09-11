@@ -65,6 +65,8 @@ type RouterStateOwner = {
    * is already rendering.
    */
   pending: RouterRenderFrame | undefined
+  /** Bring a cached owner back in step with the router before it is read. */
+  resync: () => void
   begin: () => void
   /**
    * Offer a frame for this publication, or `undefined` when the publication
@@ -389,6 +391,33 @@ function createOwner(router: AnyRouter): RouterStateOwner {
         ? undefined
         : pending
     },
+    resync: () => {
+      // An owner outlives every tree that mounts on it, and only a mounted
+      // frame-path provider keeps it in step: its layout effect installs the
+      // store subscription that drives `publish`. A router mounted on the
+      // *store* path in between navigates with nothing driving this owner, so
+      // by the next frame-path mount the committed frame can be a whole route
+      // behind — and that route renders, and its effects run, before the
+      // provider's own effect can publish. A `<Navigate>` in the route the
+      // user has left would fire from it.
+      //
+      // Nothing is notified here. This runs during render, and only ever
+      // advances toward the publication `publish` would have reached anyway;
+      // where a tree is already mounted and subscribed, that tree has kept the
+      // owner current and this is a no-op.
+      if (staging || pending || route.staged) {
+        return
+      }
+      const next = initialFrame(router)
+      if (
+        next.frameId === root.committed.frameId &&
+        sameLocation(next.location, root.committed.location)
+      ) {
+        return
+      }
+      root.committed = next
+      route.committed = next
+    },
     begin: () => {
       staging = true
       // The load transaction this publication belongs to. A frame is only
@@ -528,6 +557,8 @@ const ownersByRouter = new WeakMap<AnyRouter, RouterStateOwner>()
 function ownerFor(router: AnyRouter): RouterStateOwner {
   const existing = ownersByRouter.get(router)
   if (existing) {
+    // Cached for the router's lifetime, which outlasts any one tree.
+    existing.resync()
     return existing
   }
   const owner = createOwner(router)

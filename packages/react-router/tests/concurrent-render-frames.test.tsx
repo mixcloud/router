@@ -2821,6 +2821,92 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * A cached owner is brought back in step before a tree reads it.
+   *
+   * Owners are cached for the router's lifetime, which outlasts any one tree,
+   * and only a mounted frame-path provider keeps one in step — its layout
+   * effect installs the store subscription that drives `publish`. So a router
+   * that is mounted on the *store* path in between, and navigates there,
+   * leaves its cached owner a whole route behind. The next frame-path mount
+   * then renders that stale route and runs its effects before the provider's
+   * own effect can publish, which is how a `<Navigate>` in the route the user
+   * has left would fire.
+   *
+   * Asserted on mount effects rather than on screen, for the reason the
+   * rejected-seed test records: the correction lands before paint, so the
+   * screen looks right while the wrong route has already mounted. The control
+   * is the store path, where no owner exists and only the current route
+   * mounts.
+   */
+  test('a cached owner stale from a store-path interlude does not mount its route', async () => {
+    const mounted: Array<string> = []
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: function IndexComponent() {
+        React.useEffect(() => {
+          mounted.push('index')
+        }, [])
+        return <h1>Index Title</h1>
+      },
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      component: function PostsComponent() {
+        React.useEffect(() => {
+          mounted.push('posts')
+        }, [])
+        return <h1>Posts Title</h1>
+      },
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    // A frame-path mount builds and caches the owner, committed at `/`.
+    const framed = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    framed.unmount()
+
+    // A store-path mount navigates with nothing driving that owner.
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: false,
+      })
+    })
+    const stored = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    await act(async () => {
+      await router.navigate({ to: '/posts' })
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts Title' }))
+    stored.unmount()
+    expect(router.stores.location.get().pathname).toBe('/posts')
+
+    // Back on the frame path, onto the cached owner.
+    mounted.length = 0
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The route the router is actually on, and only that one.
+    expect(mounted).toEqual(['posts'])
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts Title' }))
+  })
+
+  /**
    * The seed pairs the matches with the location they belong to.
    *
    * Once a navigation publishes its pending lane — a route with a
