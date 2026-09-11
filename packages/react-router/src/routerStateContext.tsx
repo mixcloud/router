@@ -296,19 +296,30 @@ export function RouterStateStorePath({
  * still names the route on screen. Seeding from any mixture of those shows a
  * route under the wrong URL for the whole load.
  *
- * So the seed is the *last committed publication*, which is exactly what a
+ * So the seed is the *last acknowledged publication*, which is exactly what a
  * tree that had stayed mounted through this navigation would be presenting:
- * `router._committed` is the set of matches `resolvedLocation` was resolved
- * for, and the two are written together. Mounting midway is then not a
- * different experience from having been there.
+ * `router._resolvedMatches` paired with `resolvedLocation`, the two written
+ * together when the framework acknowledges a publication. Mounting midway is
+ * then not a different experience from having been there.
  *
- * Three earlier revisions of this function tried to reconstruct that pair
- * from the head — substituting `resolvedLocation`, then comparing the history
- * key, then comparing the deepest match's pathname to tell a published
- * pending lane apart. Each missed a case the next review found, the last
- * being a same-path search navigation where the pathname cannot distinguish
- * them at all. Reading the committed publication directly removes the
- * guesswork rather than adding a fourth discriminator.
+ * The matches are that field rather than `router._committed` because the two
+ * are not the same instant. Matches are published inside the framework's
+ * transition callback and `resolvedLocation` only advances once that
+ * publication is acknowledged, so in the window between them `_committed` is
+ * already the destination's while `resolvedLocation` still names the route
+ * being left — and that pair is a mixture, the very thing this seed exists to
+ * avoid. A mounted frame-path tree does not advance in that window either:
+ * its committed frame moves at the acknowledgement, which is precisely when
+ * this pair moves.
+ *
+ * Four earlier revisions of this function tried to reconstruct the pair from
+ * the head — substituting `resolvedLocation`, then comparing the history key,
+ * then comparing the deepest match's pathname to tell a published pending
+ * lane apart, then pairing `_committed` with `resolvedLocation`. Each missed
+ * a case the next review found: a same-path search navigation defeats every
+ * comparison of route shape, and the publication window defeats the pairing
+ * with `_committed`. Recording the matches at the acknowledgement removes the
+ * guesswork rather than adding a fifth discriminator.
  *
  * The head's `frameId` is kept. Nothing acknowledges a seeded frame — it is
  * only ever replaced by the next `publish` or `stage` — and a navigation that
@@ -317,14 +328,18 @@ export function RouterStateStorePath({
 function initialFrame(router: AnyRouter): RouterRenderFrame {
   const head = router.stores.__store.get()
   const resolved = router.stores.resolvedLocation.get()
-  const committed = router._committed
+  const resolvedMatches = router._resolvedMatches
   // When the location has not moved there is no navigation to be mid-way
   // through: the head is a single publication, and any matches newer than
-  // `_committed` — a background refresh, say — are the ones to show.
-  if (!resolved || !committed.length || sameLocation(resolved, head.location)) {
+  // the resolved ones — a background refresh, say — are the ones to show.
+  if (
+    !resolved ||
+    !resolvedMatches.length ||
+    sameLocation(resolved, head.location)
+  ) {
     return head
   }
-  return { ...head, location: resolved, matches: committed }
+  return { ...head, location: resolved, matches: resolvedMatches }
 }
 
 function createOwner(router: AnyRouter): RouterStateOwner {

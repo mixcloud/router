@@ -3163,24 +3163,25 @@ describe('concurrent render frames', () => {
     const gate = deferred()
     let loads = 0
 
-    function Probe() {
-      const value = useRouterState({
-        select: (s) => {
-          const state = s.location.state as { n?: number; __TSR_key?: string }
-          return `${state.n ?? 'none'}|${state.__TSR_key ?? 'none'}`
-        },
-      })
-      return <div data-testid="probe">{value}</div>
+    // The seed is read at owner creation rather than from the rendered tree:
+    // mounting a frame-path provider into a store-path navigation settles
+    // that navigation's outstanding acknowledgement, so the frame advances
+    // to the destination shortly afterwards and a rendered probe would be
+    // asserting the publication that follows the seed rather than the seed.
+    let seeded: string | undefined
+    function CaptureOwner({ children }: { children?: React.ReactNode }) {
+      const owner = useRouterStateOwner()
+      if (owner && seeded === undefined) {
+        const state = owner.frame.location.state as {
+          n?: number
+          __TSR_key?: string
+        }
+        seeded = `${state.n ?? 'none'}|${state.__TSR_key ?? 'none'}`
+      }
+      return <>{children}</>
     }
 
-    const rootRoute = createRootRoute({
-      component: () => (
-        <>
-          <Probe />
-          <Outlet />
-        </>
-      ),
-    })
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
     const indexRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: '/',
@@ -3208,6 +3209,7 @@ describe('concurrent render frames', () => {
       router.update({
         ...router.options,
         experimental_concurrentRenderFrames: true,
+        InnerWrap: CaptureOwner,
       })
     })
 
@@ -3237,12 +3239,228 @@ describe('concurrent render frames', () => {
     })
 
     // The committed entry, not the one the navigation is heading for.
-    expect(screen.getByTestId('probe')).toHaveTextContent(`none|${committedKey}`)
+    expect(seeded).toBe(`none|${committedKey}`)
 
     gate.resolve()
     await act(async () => {
       await gate.promise
     })
+  })
+
+  /**
+   * An owner seeded inside the publication window takes the acknowledged pair.
+   *
+   * Matches are published inside the framework's transition callback —
+   * `router._committed` is the destination's from that moment — while
+   * `resolvedLocation` only advances once the framework acknowledges the
+   * publication. A provider that unmounts between the two (here from
+   * `onLoad`, which core emits inside that same callback) leaves the next
+   * mount to seed from a router whose two halves describe different
+   * navigations. Pairing them would mount the destination's route effects
+   * under the URL being left.
+   *
+   * `router._resolvedMatches` is the other half of `resolvedLocation`: the
+   * matches the framework has acknowledged. A mounted frame-path tree does
+   * not advance in this window either — its committed frame moves at the
+   * acknowledgement — so the seeded tree and the mounted one agree.
+   */
+  test('an owner seeded inside the publication window takes the acknowledged matches', async () => {
+    const hold = deferred()
+    let released = false
+    hold.promise.then(() => {
+      released = true
+    })
+    let seeded: string | undefined
+
+    function CaptureOwner({ children }: { children?: React.ReactNode }) {
+      const owner = useRouterStateOwner()
+      if (owner && seeded === undefined) {
+        seeded = `${owner.frame.location.pathname}|${owner.frame.matches
+          .map((match) => match.routeId)
+          .join('+')}`
+      }
+      return <>{children}</>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const otherRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/other',
+      component: function OtherComponent() {
+        // Keeps the store-path tree from acknowledging on its own, so the
+        // window is closed by the unmount below rather than by a race.
+        if (!released) {
+          throw hold.promise
+        }
+        return <h1>Other Title</h1>
+      },
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, otherRoute]),
+      defaultPendingMs: 0,
+      // The store path commits matches without building an owner, which is
+      // what leaves the mount below to build a fresh one.
+      experimental_concurrentRenderFrames: false,
+    })
+
+    let unmountStored: (() => void) | undefined
+    router.subscribe('onLoad', () => {
+      unmountStored?.()
+    })
+
+    const stored = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    unmountStored = () => stored.unmount()
+
+    const navigation = router.navigate({ to: '/other' })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // Mid-publication: the matches have moved, the acknowledgement has not.
+    expect(router.stores.location.get().pathname).toBe('/other')
+    expect(router.stores.resolvedLocation.get()?.pathname).toBe('/')
+    expect(router._committed.map((match) => match.routeId)).toEqual([
+      '__root__',
+      '/other',
+    ])
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+        InnerWrap: CaptureOwner,
+      })
+    })
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The acknowledged publication, not a half of each.
+    expect(seeded).toBe('/|__root__+/')
+
+    hold.resolve()
+    await act(async () => {
+      await hold.promise
+    })
+  })
+
+  /**
+   * An acknowledgement outstanding across a change of path is settled, not
+   * stranded.
+   *
+   * `router._rendered` carries the representation of the tree it was offered
+   * to: a frame identity on the frame path, the published matches on the
+   * store path. A provider replaced while
+   * `experimental_concurrentRenderFrames` changes leaves the successor
+   * holding an offer it cannot satisfy in either direction — and because the
+   * load is already in flight, nothing starts another one, so the navigation
+   * promise never settles and `status` stays pending for the router's
+   * lifetime.
+   *
+   * The successor did not render that publication, so the honest
+   * acknowledgement is the one a navigation gets when nothing is mounted to
+   * acknowledge it: unrendered. The load then resolves and the new tree
+   * presents the publication from the store like any other reader.
+   *
+   * Both directions, and a same-mode replacement as the control: that one
+   * recovers on its own, because the successor can satisfy the offer.
+   */
+  test('an acknowledgement outstanding across a path change settles', async () => {
+    const observed: Array<string> = []
+
+    for (const [from, flip] of [
+      [false, true],
+      [true, true],
+      [false, false],
+      [true, false],
+    ] as Array<[boolean, boolean]>) {
+      const hold = deferred()
+      let released = false
+
+      const rootRoute = createRootRoute({ component: () => <Outlet /> })
+      const indexRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/',
+        component: () => <h1>Index Title</h1>,
+      })
+      const otherRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/other',
+        component: function OtherComponent() {
+          if (!released) {
+            throw hold.promise
+          }
+          return <h1>Other Title</h1>
+        },
+      })
+      const router = createRouter({
+        routeTree: rootRoute.addChildren([indexRoute, otherRoute]),
+        defaultPendingMs: 0,
+        experimental_concurrentRenderFrames: from,
+      })
+
+      // Unmount from `onLoad`, which core emits inside the transition
+      // callback: the offer is outstanding and nothing has acknowledged it.
+      let unmountStored: (() => void) | undefined
+      router.subscribe('onLoad', () => {
+        unmountStored?.()
+      })
+
+      const stored = render(<RouterProvider router={router} />)
+      await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+      unmountStored = () => stored.unmount()
+
+      let settled = false
+      const navigation = router.navigate({ to: '/other' })
+      navigation.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      act(() => {
+        router.update({
+          ...router.options,
+          experimental_concurrentRenderFrames: flip ? !from : from,
+        })
+      })
+      render(<RouterProvider router={router} />)
+      released = true
+      hold.resolve()
+      await act(async () => {
+        await hold.promise
+        await Promise.resolve()
+      })
+      await waitFor(() => expect(router.stores.status.get()).toBe('idle'))
+
+      observed.push(`from=${from} flip=${flip} settled=${settled}`)
+      cleanup()
+      window.history.replaceState(null, 'root', '/')
+    }
+
+    expect(observed).toEqual([
+      'from=false flip=true settled=true',
+      'from=true flip=true settled=true',
+      'from=false flip=false settled=true',
+      'from=true flip=false settled=true',
+    ])
   })
 
   /**

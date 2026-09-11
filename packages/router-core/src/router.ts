@@ -1138,6 +1138,16 @@ export class RouterCore<
   _cache = new Map<string, AnyRouteMatch>()
   /** Accepted semantic lane, excluding temporary pending presentation. */
   _committed: Array<AnyRouteMatch> = []
+  /**
+   * The matches `resolvedLocation` resolved for.
+   *
+   * `_committed` runs ahead of it: matches are published inside the
+   * framework's transition callback, and `resolvedLocation` only advances
+   * once that publication is acknowledged, so in between the two describe
+   * different navigations. This is the pair — the last publication the
+   * framework has acknowledged, and the location it belongs to.
+   */
+  _resolvedMatches: Array<AnyRouteMatch> = []
 
   // Must build in constructor
   stores!: RouterStores<TRouteTree>

@@ -57,6 +57,30 @@ export function Transitioner({
       })
     })
 
+  // An outstanding acknowledgement carries the representation of the tree
+  // that was offered it: a frame identity on the frame path, the published
+  // matches on the store path. A tree mounting on the *other* path can
+  // satisfy neither test, so the offer would sit unacknowledged for the
+  // router's lifetime and the navigation awaiting it would never settle —
+  // reachable by replacing a provider while `experimental_concurrentRenderFrames`
+  // changes, where the load is already in flight and nothing will start
+  // another one.
+  //
+  // Settle it as unrendered, which is exactly what a navigation gets when
+  // nothing is mounted to acknowledge it at all: the load resolves, and this
+  // tree renders the publication from the store like any other reader.
+  useLayoutEffect(() => {
+    const offered = acknowledgement[0 /* offered */]
+    const satisfiable = routerStateOwner
+      ? typeof offered === 'number'
+      : Array.isArray(offered)
+    if (acknowledgement.length && !satisfiable) {
+      settleOwner(acknowledgement, false)
+    }
+    // Mount only: a tree offers in its own representation from then on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Subscribe before canonicalizing so the initial URL has exactly one load.
   useLayoutEffect(() => {
     const unsub = router.history.subscribe(router.load)
