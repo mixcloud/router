@@ -114,23 +114,34 @@ function resolveFrame(
 }
 
 /**
- * Whether the head has moved away from a staged publication.
+ * Whether two locations are the same position in history.
  *
  * The history key is compared as well as the href, because a replacement can
- * target the same URL with different state — same href, different entry — and
- * the frame staged before it is just as stale. The location decides this
- * rather than the frame identity: a publication that changes matches without
- * moving the location, a background refresh say, is not a supersession, and
- * treating it as one would wedge the navigation it belongs to.
+ * target the same URL with different state — same href, different entry. Both
+ * places that ask "has the location moved?" go through this, so neither can
+ * drift into comparing less than the other: the supersession guard, and the
+ * seed that decides whether a fresh owner's head is coherent.
+ */
+function sameLocation(
+  a: RouterRenderFrame['location'],
+  b: RouterRenderFrame['location'],
+): boolean {
+  return a.href === b.href && a.state.__TSR_key === b.state.__TSR_key
+}
+
+/**
+ * Whether the head has moved away from a staged publication.
+ *
+ * The location decides this rather than the frame identity: a publication that
+ * changes matches without moving the location, a background refresh say, is
+ * not a supersession, and treating it as one would wedge the navigation it
+ * belongs to.
  */
 function isSuperseded(
   frame: RouterRenderFrame,
   head: RouterRenderFrame,
 ): boolean {
-  return (
-    head.location.href !== frame.location.href ||
-    head.location.state.__TSR_key !== frame.location.state.__TSR_key
-  )
+  return !sameLocation(head.location, frame.location)
 }
 
 /**
@@ -292,7 +303,7 @@ export function RouterStateStorePath({
 function initialFrame(router: AnyRouter): RouterRenderFrame {
   const head = router.stores.__store.get()
   const resolved = router.stores.resolvedLocation.get()
-  if (!resolved || resolved.href === head.location.href) {
+  if (!resolved || sameLocation(resolved, head.location)) {
     return head
   }
   // Same matches, so the same route content and the same identity — only the

@@ -2821,6 +2821,109 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * The seed compares the history entry, not just the href.
+   *
+   * A same-URL navigation that pushes a new history entry leaves
+   * `resolvedLocation.href` equal to the head's, while their `__TSR_key`
+   * values differ. Comparing hrefs alone therefore reads the head as coherent
+   * and seeds from it, pairing the *uncommitted* destination state with the
+   * previously resolved matches — a freshly mounted tree would show history
+   * state that nothing has committed.
+   *
+   * Both guards that ask "has the location moved?" now go through one
+   * `sameLocation`, so the seed cannot drift into comparing less than the
+   * supersession check does. Unlike the same-URL half of the supersession
+   * test, this one is reachable: with an href-only comparison the mounted
+   * tree reads the destination's state, and with the key compared it reads
+   * the publication that is actually committed.
+   */
+  test('an owner seeded during a same-url navigation compares the history entry', async () => {
+    const gate = deferred()
+    let loads = 0
+
+    function Probe() {
+      const value = useRouterState({
+        select: (s) => {
+          const state = s.location.state as { n?: number; __TSR_key?: string }
+          return `${state.n ?? 'none'}|${state.__TSR_key ?? 'none'}`
+        },
+      })
+      return <div data-testid="probe">{value}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Probe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      loader: () => {
+        loads += 1
+        return loads === 1 ? 'first' : gate.promise
+      },
+      component: () => <h1>Index Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute]),
+      defaultPendingMs: 0,
+      // The store path commits without building an owner, so the mount below
+      // is what builds one.
+      experimental_concurrentRenderFrames: false,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    const committedKey = router.stores.location.get().state.__TSR_key
+    first.unmount()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+
+    // Same URL, new history entry: the hrefs match, the keys do not.
+    const navigation = router.navigate({
+      to: '/',
+      // `n` rides along so the uncommitted state is visible if it leaks.
+      state: ((previous: Record<string, unknown>) => ({
+        ...previous,
+        n: 2,
+      })) as unknown as Parameters<typeof router.navigate>[0]['state'],
+    })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const head = router.stores.location.get()
+    const resolved = router.stores.resolvedLocation.get()
+    expect(resolved?.href).toBe(head.href)
+    expect(resolved?.state.__TSR_key).not.toBe(head.state.__TSR_key)
+
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The committed entry, not the one the navigation is heading for.
+    expect(screen.getByTestId('probe')).toHaveTextContent(`none|${committedKey}`)
+
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+  })
+
+  /**
    * A store-path provider nested under a frame-path one owns no frames.
    *
    * `Transitioner` takes its owner from context without consulting the mode,
