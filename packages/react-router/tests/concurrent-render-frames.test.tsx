@@ -676,6 +676,63 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
     await waitFor(() => screen.getByRole('heading', { name: 'B Title' }))
     expect(screen.getByTestId('probe')).toHaveTextContent('/b|__root__+/b')
   })
+
+  /**
+   * Progress reaches consumers even when route content does not move.
+   *
+   * `frameId` identifies route content and deliberately excludes `status` and
+   * `isLoading`, so a progress-only publication carries the id the frame path
+   * has already committed. That is not a no-op: a frame committed during a
+   * navigation takes its progress from the head, and the head is still
+   * 'pending' there, because the load settles only after the acknowledgement
+   * it is awaiting. The idle that follows is the notification that says the
+   * load has finished.
+   *
+   * Driven through the store rather than a navigation: every load today pairs
+   * its status change with a location change, so the id advances and hides
+   * the question. The frame path must not depend on that pairing — nothing in
+   * the store's contract promises it — and the store path, which reads the
+   * live atoms, never could.
+   */
+  test('a progress-only publication reaches consumers', async () => {
+    const rootRoute = createRootRoute({
+      component: function RootComponent() {
+        const progress = useRouterState({
+          select: (s) => `${s.status}|${String(s.isLoading)}`,
+        })
+        return (
+          <>
+            <div data-testid="progress">{progress}</div>
+            <Outlet />
+          </>
+        )
+      },
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index</h1>,
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index' }))
+    expect(screen.getByTestId('progress')).toHaveTextContent('idle|false')
+
+    act(() => {
+      router.stores.status.set('pending')
+    })
+    expect(screen.getByTestId('progress')).toHaveTextContent('pending|true')
+
+    act(() => {
+      router.stores.status.set('idle')
+    })
+    expect(screen.getByTestId('progress')).toHaveTextContent('idle|false')
+  })
 })
 
 describe('concurrent render frames', () => {

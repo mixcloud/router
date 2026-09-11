@@ -524,6 +524,14 @@ function createOwner(router: AnyRouter): RouterStateOwner {
         return
       }
       if (nextFrame.frameId === root.committed.frameId) {
+        // Same route content, so there is nothing to commit — but progress is
+        // deliberately not part of the frame id, and a committed frame can
+        // carry the progress of a *different* moment: `commit` takes it from
+        // the head, which is still 'pending' because the load only settles
+        // after the acknowledgement it is waiting on. The idle that follows
+        // is then the one notification that would tell consumers the load has
+        // finished, and returning here would swallow it.
+        syncProgress(head)
         return
       }
       root.committed = nextFrame
