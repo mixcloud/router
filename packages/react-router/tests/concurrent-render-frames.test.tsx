@@ -2907,27 +2907,107 @@ describe('concurrent render frames', () => {
   })
 
   /**
-   * The seed pairs the matches with the location they belong to.
+   * The same, where only the search changed.
    *
-   * Once a navigation publishes its pending lane — a route with a
-   * `pendingComponent` and `pendingMs` elapsed — `stores.matches` already
-   * holds the *destination's* matches while `resolvedLocation` still names the
-   * route being left. Pairing those with `resolvedLocation`, as the first
-   * version of this seed did unconditionally, produces the opposite mixture to
-   * the one it exists to prevent: the old URL wearing the destination's
-   * matches.
+   * `/items?page=1` to `/items?page=2` publishes a pending lane whose matches
+   * have the *same pathname* as the committed ones, so nothing about the
+   * route path distinguishes them — an earlier revision of the seed compared
+   * exactly that and could not tell them apart, pairing page 2's matches with
+   * page 1's URL. Taking the committed publication needs no such comparison.
+   */
+  test('an owner seeded during a search-only pending navigation takes the committed publication', async () => {
+    const gate = deferred()
+    let seeded: string | undefined
+
+    function CaptureOwner({ children }: { children?: React.ReactNode }) {
+      const owner = useRouterStateOwner()
+      if (owner && seeded === undefined) {
+        const page = (owner.frame.matches.at(-1)?.search as { page?: number })
+          .page
+        seeded = `${owner.frame.location.searchStr}|page=${page}`
+      }
+      return <>{children}</>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const itemsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/items',
+      validateSearch: (search: Record<string, unknown>) => ({
+        page: Number(search.page ?? 1),
+      }),
+      loaderDeps: ({ search }) => ({ page: search.page }),
+      loader: ({ deps }) => (deps.page === 1 ? 'first' : gate.promise),
+      pendingComponent: () => <h1>Items Pending</h1>,
+      component: () => <h1>Items Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([itemsRoute]),
+      defaultPendingMs: 0,
+      defaultPendingMinMs: 0,
+      experimental_concurrentRenderFrames: false,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await act(async () => {
+      await router.navigate({ to: '/items', search: { page: 1 } })
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Items Title' }))
+    first.unmount()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+        InnerWrap: CaptureOwner,
+      })
+    })
+
+    const navigation = router.navigate({ to: '/items', search: { page: 2 } })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // Same pathname on both sides, so only the search tells them apart.
+    expect(router.stores.location.get().searchStr).toBe('?page=2')
+    expect(router.stores.resolvedLocation.get()?.searchStr).toBe('?page=1')
+    expect(
+      (router.stores.matches.get().at(-1)?.search as { page?: number }).page,
+    ).toBe(2)
+
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(seeded).toBe('?page=1|page=1')
+
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+  })
+
+  /**
+   * A published pending lane does not reach the seed.
    *
-   * The deepest match's pathname settles which location the matches belong to,
-   * compared against `resolvedLocation` rather than against the head — on a
-   * same-URL navigation to a new entry both pathnames are equal and the
-   * matches are the committed ones, so `resolvedLocation` is still the right
-   * partner there.
+   * Once a route with a `pendingComponent` publishes its pending lane,
+   * `stores.matches` holds the *destination's* matches while
+   * `resolvedLocation` still names the route on screen. The seed takes
+   * neither the head nor a mixture of the two: it takes the last committed
+   * publication, `router._committed` paired with `resolvedLocation`, which is
+   * what a tree that had stayed mounted through this navigation is
+   * presenting — its committed frame does not advance while `status` is
+   * pending.
    *
    * Asserted on the owner's seeded frame rather than on screen: at that moment
    * the pending fallback covers the tree, so a rendered probe cannot tell the
-   * two apart even though the frame differs.
+   * candidates apart even though the frame differs.
    */
-  test('an owner seeded after pending matches publish keeps the head location', async () => {
+  test('an owner seeded after pending matches publish takes the committed publication', async () => {
     const gate = deferred()
     let seeded: string | undefined
 
@@ -2981,12 +3061,13 @@ describe('concurrent render frames', () => {
       await Promise.resolve()
     })
 
-    // The state that makes this reachable: destination matches, previous
-    // resolved location.
+    // The state that makes this reachable: destination matches in the store,
+    // the previous publication still committed.
     expect(router.stores.matches.get().map((m) => m.routeId)).toEqual([
       '__root__',
       '/slow',
     ])
+    expect(router._committed.map((m) => m.routeId)).toEqual(['__root__', '/'])
     expect(router.stores.resolvedLocation.get()?.pathname).toBe('/')
 
     render(<RouterProvider router={router} />)
@@ -2994,9 +3075,9 @@ describe('concurrent render frames', () => {
       await Promise.resolve()
     })
 
-    // Coherent: the destination's matches with the destination's location,
-    // rather than those matches wearing the route being left.
-    expect(seeded).toBe('/slow|__root__+/slow')
+    // The publication still on screen, not the destination's matches and not
+    // a mixture of the two.
+    expect(seeded).toBe('/|__root__+/')
 
     gate.resolve()
     await act(async () => {

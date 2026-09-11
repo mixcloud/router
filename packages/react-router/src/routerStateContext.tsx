@@ -291,41 +291,40 @@ export function RouterStateStorePath({
  * An owner can be built while a navigation is already in flight — a provider
  * mounted mid-navigation, or a router that committed its matches on the store
  * path before the option was turned on. The head is not a snapshot of one
- * publication at that moment: `location` is already the destination while
- * `matches` are still the ones on screen, which is the second half of what
- * this option exists to fix. Seeding both scopes from it presents the
- * successor's URL beside the previous route's content for the whole load.
+ * publication then: `location` is already the destination, and once a pending
+ * lane publishes `matches` is the destination's too, while `resolvedLocation`
+ * still names the route on screen. Seeding from any mixture of those shows a
+ * route under the wrong URL for the whole load.
  *
- * `resolvedLocation` is the location the committed matches were resolved for,
- * so pairing the two gives back a coherent publication. That is also exactly
- * what a tree that stayed mounted through the same navigation presents: the
- * route and URL it is showing, until the navigation commits. Mounting midway
- * should not be a different experience from having been there.
+ * So the seed is the *last committed publication*, which is exactly what a
+ * tree that had stayed mounted through this navigation would be presenting:
+ * `router._committed` is the set of matches `resolvedLocation` was resolved
+ * for, and the two are written together. Mounting midway is then not a
+ * different experience from having been there.
+ *
+ * Three earlier revisions of this function tried to reconstruct that pair
+ * from the head — substituting `resolvedLocation`, then comparing the history
+ * key, then comparing the deepest match's pathname to tell a published
+ * pending lane apart. Each missed a case the next review found, the last
+ * being a same-path search navigation where the pathname cannot distinguish
+ * them at all. Reading the committed publication directly removes the
+ * guesswork rather than adding a fourth discriminator.
+ *
+ * The head's `frameId` is kept. Nothing acknowledges a seeded frame — it is
+ * only ever replaced by the next `publish` or `stage` — and a navigation that
+ * commits changes the matches, so the head's identity advances past it.
  */
 function initialFrame(router: AnyRouter): RouterRenderFrame {
   const head = router.stores.__store.get()
   const resolved = router.stores.resolvedLocation.get()
-  if (!resolved || sameLocation(resolved, head.location)) {
+  const committed = router._committed
+  // When the location has not moved there is no navigation to be mid-way
+  // through: the head is a single publication, and any matches newer than
+  // `_committed` — a background refresh, say — are the ones to show.
+  if (!resolved || !committed.length || sameLocation(resolved, head.location)) {
     return head
   }
-  // Which of the two locations do the head's matches belong to? Once a
-  // navigation publishes its pending lane — a route with a `pendingComponent`
-  // and `pendingMs` elapsed — `matches` is already the *destination's* while
-  // `resolvedLocation` still names the route being left. Pairing those with
-  // `resolvedLocation` would produce the opposite mixture to the one this
-  // function exists to avoid: the old URL wearing the destination's matches.
-  //
-  // The deepest match's pathname settles it, compared against `resolved`
-  // rather than against the head: on a same-URL navigation to a new history
-  // entry both pathnames are equal, and there the matches are the committed
-  // ones, so `resolved` is still the right partner.
-  const deepest = head.matches[head.matches.length - 1]
-  if (deepest && deepest.pathname !== resolved.pathname) {
-    return head
-  }
-  // Same matches, so the same route content and the same identity — only the
-  // location is put back to the one those matches belong to.
-  return { ...head, location: resolved }
+  return { ...head, location: resolved, matches: committed }
 }
 
 function createOwner(router: AnyRouter): RouterStateOwner {
