@@ -2821,6 +2821,104 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * The seed pairs the matches with the location they belong to.
+   *
+   * Once a navigation publishes its pending lane — a route with a
+   * `pendingComponent` and `pendingMs` elapsed — `stores.matches` already
+   * holds the *destination's* matches while `resolvedLocation` still names the
+   * route being left. Pairing those with `resolvedLocation`, as the first
+   * version of this seed did unconditionally, produces the opposite mixture to
+   * the one it exists to prevent: the old URL wearing the destination's
+   * matches.
+   *
+   * The deepest match's pathname settles which location the matches belong to,
+   * compared against `resolvedLocation` rather than against the head — on a
+   * same-URL navigation to a new entry both pathnames are equal and the
+   * matches are the committed ones, so `resolvedLocation` is still the right
+   * partner there.
+   *
+   * Asserted on the owner's seeded frame rather than on screen: at that moment
+   * the pending fallback covers the tree, so a rendered probe cannot tell the
+   * two apart even though the frame differs.
+   */
+  test('an owner seeded after pending matches publish keeps the head location', async () => {
+    const gate = deferred()
+    let seeded: string | undefined
+
+    function CaptureOwner({ children }: { children?: React.ReactNode }) {
+      const owner = useRouterStateOwner()
+      if (owner && seeded === undefined) {
+        seeded = `${owner.frame.location.pathname}|${owner.frame.matches
+          .map((m) => m.routeId)
+          .join('+')}`
+      }
+      return <>{children}</>
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      pendingComponent: () => <h1>Slow Pending</h1>,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      defaultPendingMinMs: 0,
+      experimental_concurrentRenderFrames: false,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    first.unmount()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+        InnerWrap: CaptureOwner,
+      })
+    })
+
+    const navigation = router.navigate({ to: '/slow' })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The state that makes this reachable: destination matches, previous
+    // resolved location.
+    expect(router.stores.matches.get().map((m) => m.routeId)).toEqual([
+      '__root__',
+      '/slow',
+    ])
+    expect(router.stores.resolvedLocation.get()?.pathname).toBe('/')
+
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Coherent: the destination's matches with the destination's location,
+    // rather than those matches wearing the route being left.
+    expect(seeded).toBe('/slow|__root__+/slow')
+
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+  })
+
+  /**
    * The seed compares the history entry, not just the href.
    *
    * A same-URL navigation that pushes a new history entry leaves

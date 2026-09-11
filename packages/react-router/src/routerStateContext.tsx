@@ -306,6 +306,21 @@ function initialFrame(router: AnyRouter): RouterRenderFrame {
   if (!resolved || sameLocation(resolved, head.location)) {
     return head
   }
+  // Which of the two locations do the head's matches belong to? Once a
+  // navigation publishes its pending lane — a route with a `pendingComponent`
+  // and `pendingMs` elapsed — `matches` is already the *destination's* while
+  // `resolvedLocation` still names the route being left. Pairing those with
+  // `resolvedLocation` would produce the opposite mixture to the one this
+  // function exists to avoid: the old URL wearing the destination's matches.
+  //
+  // The deepest match's pathname settles it, compared against `resolved`
+  // rather than against the head: on a same-URL navigation to a new history
+  // entry both pathnames are equal, and there the matches are the committed
+  // ones, so `resolved` is still the right partner.
+  const deepest = head.matches[head.matches.length - 1]
+  if (deepest && deepest.pathname !== resolved.pathname) {
+    return head
+  }
   // Same matches, so the same route content and the same identity — only the
   // location is put back to the one those matches belong to.
   return { ...head, location: resolved }
