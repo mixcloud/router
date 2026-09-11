@@ -92,6 +92,7 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
   config: StoreConfig,
 ): RouterStores<TRouteTree> {
   const { createMutableStore, createReadonlyStore, batch } = config
+  let nextFrameId = 0
 
   // non reactive utilities
   const byRoute = new Map<string, MatchStore>()
@@ -109,13 +110,37 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
   )
 
   // compatibility "big" state store
-  const __store = createReadonlyStore(() => ({
-    status: status.get(),
-    isLoading: status.get() === 'pending',
-    matches: matches.get(),
-    location: location.get(),
-    resolvedLocation: resolvedLocation.get(),
-  }))
+  //
+  // `frameId` advances when route content does, not on every read. The SSR
+  // store is non-reactive — its getter runs again for each reader — so
+  // counting reads gave two consumers in one server render different ids for
+  // the same content, and anything derived from one would differ between the
+  // server and the client, whose store caches the assembly. Progress is
+  // deliberately not part of the comparison: the id identifies route content,
+  // which is the contract `RouterState` documents.
+  let previous: RouterState<TRouteTree> | undefined
+  const __store = createReadonlyStore(() => {
+    const nextMatches = matches.get()
+    const nextLocation = location.get()
+    const nextResolvedLocation = resolvedLocation.get()
+    const unchanged =
+      previous !== undefined &&
+      previous.location === nextLocation &&
+      previous.resolvedLocation === nextResolvedLocation &&
+      arraysEqual(previous.matches, nextMatches)
+        ? previous
+        : undefined
+    const next: RouterState<TRouteTree> = {
+      frameId: unchanged ? unchanged.frameId : nextFrameId++,
+      status: status.get(),
+      isLoading: status.get() === 'pending',
+      matches: nextMatches,
+      location: nextLocation,
+      resolvedLocation: nextResolvedLocation,
+    }
+    previous = next
+    return next
+  })
 
   function getMatchStore(routeId: string): MatchStore {
     let matchStore = byRoute.get(routeId)

@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import {
   deepEqual,
   exactPathTest,
@@ -14,10 +14,15 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 
 import { useForwardedRef, useIntersectionObserver } from './utils'
 
 import { useHydrated } from './ClientOnly'
+import type { RouterRenderFrame } from './routerStateContext'
 import type {
   ActiveOptions,
   AnyRouter,
@@ -458,12 +463,32 @@ export function useLinkProps<
     [stableActiveOptions, disabled, isHydrated, _options, router, to],
   )
 
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  const frameMode = useFrameMode(router)
+  // The publication this link is presenting, read at click time rather than
+  // captured in render. Navigation and preloading have to resolve against the
+  // location the href was built from — with concurrent render frames a link
+  // rendered against the visible route would otherwise navigate relative to
+  // the route being prepared — but a link whose href did not change does not
+  // re-render, so a value captured here would be from whichever navigation
+  // last moved it. `undefined` outside the frame path, where the router's own
+  // head is the right source and already fresh.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [href, isActive] = useStore(
-    router.stores.location,
-    selectLinkState,
-    compareLinkState,
+  const presentedFrame = React.useRef<(() => RouterRenderFrame) | undefined>(
+    undefined,
   )
+  const [href, isActive] = frameMode
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+      useRouterStateSelector(
+        router,
+        (state) => selectLinkState(state.location),
+        compareLinkState,
+        presentedFrame,
+      )
+    : // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+      useSelector(router.stores.location, selectLinkState, {
+        compare: compareLinkState,
+      })
   const externalLink = isActive === undefined ? href : undefined
   const linkDisabled = disabled || href === undefined
 
@@ -480,11 +505,18 @@ export function useLinkProps<
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const doPreload = React.useCallback(() => {
     // `preloadRoute` builds the location itself; it is no longer held in render
-    // state. It only reads the options, so `_options` can go through as-is.
-    router.preloadRoute(_options as any).catch((err) => {
-      console.warn(err)
-      console.warn(preloadWarning)
-    })
+    // state. It resolves against the publication this link is presenting, so
+    // it preloads the destination the link is displaying, and an explicit
+    // `_fromLocation` in the options still wins.
+    router
+      .preloadRoute({
+        _fromLocation: presentedFrame.current?.().location,
+        ..._options,
+      } as any)
+      .catch((err) => {
+        console.warn(err)
+        console.warn(preloadWarning)
+      })
   }, [router, _options])
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -595,6 +627,9 @@ export function useLinkProps<
       // All is well? Navigate!
       // N.B. we don't call `router.commitLocation(next) here because we want to run `validateSearch` before committing
       router.navigate({
+        // Resolve against the location this link's href was built from, so the
+        // click goes where the href says it does.
+        _fromLocation: presentedFrame.current?.().location,
         ..._options,
         replace,
         resetScroll,

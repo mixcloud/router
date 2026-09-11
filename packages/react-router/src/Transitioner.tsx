@@ -4,7 +4,9 @@ import * as React from 'react'
 import { getLocationChangeInfo, trimPathRight } from '@tanstack/router-core'
 import { useLayoutEffect } from './utils'
 import { useRouter } from './useRouter'
+import { useRouterStateOwner } from './routerStateContext'
 import type { AnyRouter } from '@tanstack/router-core'
+import type { RouterRenderFrame } from './routerStateContext'
 
 export function settleOwner(
   owner: NonNullable<AnyRouter['_rendered']>,
@@ -17,10 +19,13 @@ export function settleOwner(
 
 export function Transitioner({
   t,
+  setRenderFrame,
 }: {
   t: React.Dispatch<React.SetStateAction<AnyRouter | undefined>>
+  setRenderFrame: (frame: RouterRenderFrame | undefined) => void
 }) {
   const router = useRouter()
+  const routerStateOwner = useRouterStateOwner()
   const acknowledgement = (router._rendered ??= [])
   const mounted =
     process.env.NODE_ENV !== 'production'
@@ -33,8 +38,53 @@ export function Transitioner({
       settleOwner(acknowledgement, false)
       acknowledgement.push(expected, resolve)
       t(router)
-      React.startTransition(fn)
+      React.startTransition(() => {
+        routerStateOwner?.begin()
+        try {
+          fn()
+          // Read the aggregate state after the batched writes, so the staged
+          // frame is exactly what this publication assembled.
+          const frame = routerStateOwner?.stage(router.stores.__store.get())
+          if (frame) {
+            acknowledgement[0 /* offered */] = frame.frameId
+            setRenderFrame(frame)
+          }
+        } catch (cause) {
+          routerStateOwner?.cancel()
+          setRenderFrame(undefined)
+          throw cause
+        }
+      })
     })
+
+  // An outstanding acknowledgement carries the representation of the tree
+  // that was offered it: a frame identity on the frame path, the published
+  // matches on the store path. A tree mounting on the *other* path can
+  // satisfy neither test, so the offer would sit unacknowledged for the
+  // router's lifetime and the navigation awaiting it would never settle —
+  // reachable by replacing a provider while `experimental_concurrentRenderFrames`
+  // changes, where the load is already in flight and nothing will start
+  // another one.
+  //
+  // Settle it as unrendered, which is exactly what a navigation gets when
+  // nothing is mounted to acknowledge it at all: the load resolves, and this
+  // tree renders the publication from the store like any other reader.
+  //
+  // Not mount-only: a mounted provider handed a different router inherits
+  // that router's outstanding offer, which may have been made to a tree on
+  // the other path, so the same mismatch arrives without a mount. The
+  // acknowledgement slot is per router, so it changes with the router; the
+  // owner changes with it, and with the path this tree is on.
+  useLayoutEffect(() => {
+    const slot = (router._rendered ??= [])
+    const offered = slot[0 /* offered */]
+    const satisfiable = routerStateOwner
+      ? typeof offered === 'number'
+      : Array.isArray(offered)
+    if (slot.length && !satisfiable) {
+      settleOwner(slot, false)
+    }
+  }, [router, routerStateOwner])
 
   // Subscribe before canonicalizing so the initial URL has exactly one load.
   useLayoutEffect(() => {
@@ -78,14 +128,17 @@ export function Transitioner({
       resolvedLocation?.href === location.href &&
       resolvedLocation.state.__TSR_key === location.state.__TSR_key
     ) {
-      acknowledgement.push(router.stores.matches.get(), (rendered) => {
-        if (rendered) {
-          router.emit({
-            type: 'onRendered',
-            ...getLocationChangeInfo(resolvedLocation, resolvedLocation),
-          })
-        }
-      })
+      acknowledgement.push(
+        routerStateOwner?.frame.frameId ?? router.stores.matches.get(),
+        (rendered) => {
+          if (rendered) {
+            router.emit({
+              type: 'onRendered',
+              ...getLocationChangeInfo(resolvedLocation, resolvedLocation),
+            })
+          }
+        },
+      )
     } else if (!router._tx) {
       router.load({ sync: true }).catch(console.error)
     }

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import {
   _getAssetMatches,
   appendUniqueUserTags,
@@ -11,6 +11,10 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   AnyRouteMatch,
   AssetCrossOriginConfig,
@@ -196,21 +200,24 @@ export const useTags = (assetCrossOrigin?: AssetCrossOriginConfig) => {
   const router = useRouter()
   const nonce = router.options.ssr?.nonce
 
-  if (isServer ?? router.isServer) {
-    return buildTagsFromMatches(
-      router,
-      nonce,
-      router.stores.matches.get(),
-      assetCrossOrigin,
-    )
-  }
-
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
   const selectTags = React.useCallback(
     (matches: Array<AnyRouteMatch>) =>
       buildTagsFromMatches(router, nonce, matches, assetCrossOrigin),
     [assetCrossOrigin, nonce, router],
   )
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    return useRouterStateSelector(
+      router,
+      (state) => selectTags(state.matches),
+      deepEqual,
+    )
+  }
+
+  if (isServer ?? router.isServer) {
+    return selectTags(router.stores.matches.get())
+  }
+
   // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  return useStore(router.stores.matches, selectTags, deepEqual)
+  return useSelector(router.stores.matches, selectTags, { compare: deepEqual })
 }

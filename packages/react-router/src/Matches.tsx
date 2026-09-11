@@ -1,23 +1,31 @@
 'use client'
 
 import * as React from 'react'
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import { rootRouteId } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { CatchBoundary } from './CatchBoundary'
 import { useRouter } from './useRouter'
-import { useStructuralSharing } from './useMatch'
+import { useStructuralSharing, withSelectorCache } from './useMatch'
 import { useLayoutEffect } from './utils'
 import { Transitioner, settleOwner } from './Transitioner'
 import { matchContext } from './matchContext'
 import { Match, renderPending } from './Match'
 import { SafeFragment } from './SafeFragment'
+import {
+  RouterStateFrame,
+  useFrameMode,
+  useRouterStateOwner,
+  useRouterStateSelector,
+} from './routerStateContext'
+import type { RouterRenderFrame } from './routerStateContext'
 import type {
   StructuralSharingOption,
   ValidateSelected,
 } from './structuralSharing'
 import type {
   AnyRoute,
+  AnyRouteMatch,
   AnyRouter,
   DeepPartial,
   Expand,
@@ -28,6 +36,7 @@ import type {
   MatchRouteOptions,
   RegisteredRouter,
   ResolveRoute,
+  RouterState,
   ToSubOptionsProps,
 } from '@tanstack/router-core'
 
@@ -47,13 +56,110 @@ declare module '@tanstack/router-core' {
  */
 export function Matches() {
   const router = useRouter()
+  const routerStateOwner = useRouterStateOwner()
+  // Queued per router, because a router swapped under a mounted provider keeps
+  // its own navigation in flight — along with the `startTransition` override
+  // holding this dispatch — so its staged frame can still arrive here
+  // afterwards.
+  //
+  // One slot with a tag was not enough: the write is what the stale dispatch
+  // reaches, so it replaced the current router's entry with its own, and
+  // filtering on read then left that router with no queued frame at all. Its
+  // acknowledgement would never settle. A slot per router means neither can
+  // clobber the other, and reading only this router's slot keeps a foreign
+  // frame out of the tree — `frameId` counts per router, so a collision could
+  // otherwise commit the wrong router's snapshot outright.
+  //
+  // Seeded from the owner's in-flight frame, for the case where this tree is
+  // not the one that was offered it: a provider that unmounts mid-navigation
+  // and mounts again on the same router hands its cached owner to a fresh
+  // `Matches`, whose consumers seed from the staged publication. Without
+  // adopting it here, this tree renders that frame while acknowledging
+  // against the committed one, so the acknowledgement never settles and the
+  // navigation stays pending for good.
+  const [queuedFrames, setQueuedFrames] = React.useState<
+    ReadonlyMap<AnyRouter, RouterRenderFrame>
+  >(() =>
+    routerStateOwner?.pending
+      ? new Map([[router, routerStateOwner.pending]])
+      : new Map(),
+  )
+  // The same adoption again, for a router this tree returns to rather than
+  // mounts on. The initializer runs once, so switching away from a router
+  // mid-navigation and back — the map pruned to the other router meanwhile —
+  // left it with no queued frame while its owner still held one in flight.
+  //
+  // Deliberately only at mount and on a change of router, never on every
+  // render: a tree already rendering for this router receives its staged
+  // frame through the dispatch, inside `startTransition`. Adopting outside
+  // those two moments would let an urgent render pick up a frame it is not
+  // presenting and acknowledge it, which is the isolation this option exists
+  // to provide.
+  const [adoptedRouter, setAdoptedRouter] = React.useState(router)
+  const adopting = adoptedRouter !== router
+  if (adopting) {
+    setAdoptedRouter(router)
+  }
+
+  // Adoption and pruning decide the same value, so they are resolved together
+  // here rather than written separately. Two plain writes in one render do not
+  // compose — the second wins — so pruning against the pre-adoption map threw
+  // the adopted frame away, and the next render skipped adoption because the
+  // router had already been recorded.
+  //
+  // Pruning keeps only this router's slot. A dispatch that outlived its router
+  // can insert one for a router this tree will never render again, and nothing
+  // else would remove it — every outgoing router and its route data would be
+  // retained for the life of this component. Adjusting state during render is
+  // React's own answer to this shape; the write below re-renders immediately,
+  // so the map is bounded whatever a stale dispatch does.
+  let effectiveFrames = queuedFrames
+  const queued = effectiveFrames.get(router)
+  if (adopting && !queued && routerStateOwner?.pending) {
+    effectiveFrames = new Map([[router, routerStateOwner.pending]])
+  } else if (effectiveFrames.size > (queued ? 1 : 0)) {
+    effectiveFrames = queued ? new Map([[router, queued]]) : new Map()
+  }
+  if (effectiveFrames !== queuedFrames) {
+    setQueuedFrames(effectiveFrames)
+  }
+  const renderFrame = effectiveFrames.get(router)
+  const setRenderFrame = React.useCallback(
+    (frame: RouterRenderFrame | undefined) =>
+      setQueuedFrames((previous) => {
+        if (previous.get(router) === frame) {
+          return previous
+        }
+        const next = new Map(previous)
+        if (frame) {
+          next.set(router, frame)
+        } else {
+          next.delete(router)
+        }
+        return next
+      }),
+    [router],
+  )
+  const activeFrame = renderFrame ?? routerStateOwner?.frame
   const rootRoute: AnyRoute = router.routesById[rootRouteId]
 
   const pendingElement = renderPending(router, rootRoute)
 
-  // Do not render a root Suspense during SSR or hydrating from SSR
+  const _isServer = isServer ?? router.isServer
+  // Unchanged from upstream, deliberately. An earlier revision wrote this as
+  // `router.ssr && !useFrameRootBoundary(...)`, which reads as though the
+  // frame path opens a boundary here that the store path does not — but the
+  // clause is dead: `frameRootBoundary` requires `!router.ssr`, so it can only
+  // ever be false where `router.ssr` is what decides the expression. The
+  // consolidation the frame path does perform is in `Match.tsx`, which drops
+  // the *route-level* boundaries so one complete frame is acknowledged
+  // atomically; this root boundary is the same one upstream renders.
+  //
+  // It follows that the wrapper type's dependence on `router.ssr` — and the
+  // remount if a mounted provider is handed a router with the opposite
+  // setting — is upstream behaviour that this option neither adds nor fixes.
   const ResolvedSuspense =
-    (isServer ?? router.isServer) || router.ssr ? SafeFragment : React.Suspense
+    _isServer || router.ssr ? SafeFragment : React.Suspense
 
   const inner = (
     <>
@@ -65,10 +171,21 @@ export function Matches() {
           // router object, so React skips the update.
           // eslint-disable-next-line react-hooks/rules-of-hooks -- server only, condition is static
           t={React.useState<AnyRouter>()[1]}
+          setRenderFrame={setRenderFrame}
         />
       )}
       <ResolvedSuspense fallback={pendingElement}>
-        <MatchesInner />
+        {activeFrame ? (
+          <RouterStateFrame>
+            <MatchesInner
+              activeFrame={activeFrame}
+              renderFrame={renderFrame}
+              setRenderFrame={setRenderFrame}
+            />
+          </RouterStateFrame>
+        ) : (
+          <MatchesInner setRenderFrame={setRenderFrame} />
+        )}
       </ResolvedSuspense>
     </>
   )
@@ -80,25 +197,59 @@ export function Matches() {
   )
 }
 
-function MatchesInner() {
+function MatchesInner({
+  activeFrame,
+  renderFrame,
+  setRenderFrame,
+}: {
+  activeFrame?: RouterRenderFrame
+  renderFrame?: RouterRenderFrame
+  setRenderFrame: (frame: RouterRenderFrame | undefined) => void
+}) {
   const router = useRouter()
+  const routerStateOwner = useRouterStateOwner()
   const acknowledgement = router._rendered!
-  const matches =
-    (isServer ?? router.isServer)
-      ? router.stores.matches.get()
-      : // eslint-disable-next-line react-hooks/rules-of-hooks
-        useStore(
-          router.stores.matches,
-          (value) => acknowledgement[0 /* offered */] ?? value,
-        )
+  const frameMode = useFrameMode(router)
+  let matches: Array<AnyRouteMatch>
+  if (frameMode) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    matches = useRouterStateSelector(router, (state) => state.matches)
+  } else if (isServer ?? router.isServer) {
+    matches = router.stores.matches.get()
+  } else {
+    // `Array.isArray` rather than `??`, which is what upstream can use here:
+    // the acknowledgement slot was widened to carry a frame identity, so on
+    // the frame path it holds a `frameId` number rather than a set of matches,
+    // and coalescing would hand this reader that number.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    matches = useSelector(router.stores.matches, (value) =>
+      Array.isArray(acknowledgement[0 /* offered */])
+        ? acknowledgement[0 /* offered */]
+        : value,
+    )
+  }
   const match = matches[0]
   const routeId = match?.routeId
 
   useLayoutEffect(() => {
-    if (acknowledgement[0 /* offered */] === matches) {
+    const acknowledged = frameMode
+      ? acknowledgement[0 /* offered */] === activeFrame?.frameId
+      : acknowledgement[0 /* offered */] === matches
+    if (acknowledged) {
+      if (renderFrame && routerStateOwner?.commit(renderFrame)) {
+        setRenderFrame(undefined)
+      }
       settleOwner(acknowledgement, true)
     }
-  }, [acknowledgement, matches])
+  }, [
+    acknowledgement,
+    activeFrame,
+    frameMode,
+    matches,
+    renderFrame,
+    routerStateOwner,
+    setRenderFrame,
+  ])
 
   const matchComponent = routeId ? <Match routeId={routeId} /> : null
 
@@ -177,6 +328,45 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
     }
   }
 
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const state = useRouterStateSelector(router, (frameState) => frameState)
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return React.useCallback(
+      (opts) => {
+        const { pending, caseSensitive, fuzzy, includeSearch, ...rest } = opts
+
+        // Match against the presented frame so a pending imperative location
+        // cannot leak into the committed render.
+        return router.matchRoute(
+          rest as any,
+          {
+            pending,
+            caseSensitive,
+            fuzzy,
+            includeSearch,
+            _state: state,
+          } as any,
+        )
+      },
+      [
+        router,
+        state,
+        // An explicit `matchRoute({ pending: true })` resolves against the
+        // head, so this hook has to re-render when the head moves — and a
+        // second navigation starting while the first is still pending changes
+        // only the location, which stages no frame and leaves the presented
+        // one identical. Without this a destination indicator would keep
+        // reporting the navigation that has already been superseded. It is the
+        // one hook that spans both, so it is the one that subscribes to both;
+        // non-pending queries still resolve against the presented frame.
+        // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
+        useSelector(router.stores.location, (location) => location.href),
+      ],
+    )
+  }
+
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return React.useCallback(
     (opts) => {
@@ -192,11 +382,11 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
     [
       router,
       // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-      useStore(router.stores.location, (location) => location.href),
+      useSelector(router.stores.location, (location) => location.href),
       // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-      useStore(router.stores.resolvedLocation, (location) => location?.href),
+      useSelector(router.stores.resolvedLocation, (location) => location?.href),
       // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
-      useStore(router.stores.status, (status) => status),
+      useSelector(router.stores.status),
     ],
   )
 }
@@ -267,6 +457,19 @@ export function useMatches<
 ): UseMatchesResult<TRouter, TSelected> {
   const router = useRouter<TRouter>()
 
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const selectMatches = useStructuralSharing(opts, router)
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return useRouterStateSelector(
+      router,
+      withSelectorCache(
+        (state: RouterState<any>) => selectMatches(state.matches),
+        selectMatches,
+      ),
+    ) as UseMatchesResult<TRouter, TSelected>
+  }
+
   if (isServer ?? router.isServer) {
     const matches = router.stores.matches.get() as Array<
       MakeRouteMatchUnion<TRouter>
@@ -278,7 +481,7 @@ export function useMatches<
   }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  return useStore(
+  return useSelector(
     router.stores.matches,
     // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
     useStructuralSharing(opts, router),

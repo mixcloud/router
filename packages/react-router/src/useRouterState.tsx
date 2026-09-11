@@ -1,9 +1,13 @@
 'use client'
 
-import { useStore } from '@tanstack/react-store'
+import { useSelector } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
 import { useStructuralSharing } from './useMatch'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   AnyRouter,
   RegisteredRouter,
@@ -54,6 +58,15 @@ export function useRouterState<
   })
   const router = opts?.router || contextRouter
 
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    return useRouterStateSelector(
+      router,
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+      useStructuralSharing(opts, router),
+    ) as UseRouterStateResult<TRouter, TSelected>
+  }
+
   // During SSR we render exactly once and do not need reactivity.
   // Avoid subscribing to the store (and any structural sharing work) on the server.
   // The expression must stay inlined in the `if` so bundlers fold the
@@ -69,7 +82,7 @@ export function useRouterState<
   }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  return useStore(
+  return useSelector(
     router.stores.__store,
     // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
     useStructuralSharing(opts, router),

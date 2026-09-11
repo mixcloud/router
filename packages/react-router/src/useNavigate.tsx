@@ -3,6 +3,7 @@
 import * as React from 'react'
 import { useLayoutEffect } from './utils'
 import { useRouter } from './useRouter'
+import { usePresentedLocation } from './routerStateContext'
 import type {
   AnyRouter,
   FromPathOption,
@@ -32,15 +33,22 @@ export function useNavigate<
   from?: FromPathOption<TRouter, TDefaultFrom>
 }): UseNavigateResult<TDefaultFrom> {
   const router = useRouter()
+  // Resolve against the route the caller is looking at, not the one the router
+  // is preparing. With concurrent render frames a handler still on the old
+  // route would otherwise inherit the pending navigation's search or params —
+  // the same reason `Link` resolves its click from the location it rendered
+  // against. Read at call time; an explicit `_fromLocation` still wins.
+  const presentedLocation = usePresentedLocation(router)
 
   return React.useCallback(
     (options: NavigateOptions) => {
       return router.navigate({
+        _fromLocation: presentedLocation?.(),
         ...options,
         from: options.from ?? _defaultOpts?.from,
-      })
+      } as NavigateOptions)
     },
-    [_defaultOpts?.from, router],
+    [_defaultOpts?.from, presentedLocation, router],
   ) as UseNavigateResult<TDefaultFrom>
 }
 

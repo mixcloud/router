@@ -1901,6 +1901,7 @@ async function runClientTransaction(
     }
     router.batch(() => {
       router.stores.resolvedLocation.set(toLocation)
+      router._resolvedMatches = router._committed
       router.stores.status.set('idle')
       if (router._tx === tx) {
         router.emit({ type: 'onResolved', ...changeInfo })
@@ -2549,6 +2550,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
     router.stores.status.set('idle')
     if (!needsClientLoad) {
       router.stores.resolvedLocation.set(router.stores.location.get())
+      router._resolvedMatches = router._committed
     }
   })
 }

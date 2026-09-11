@@ -418,3 +418,29 @@ If you want to configure to remount all route components upon `params` change, u
 ```tsx
 remountDeps: ({ params }) => params
 ```
+
+### `experimental_concurrentRenderFrames` property
+
+- Type: `boolean`
+- Optional
+- Defaults to `false`
+- **Experimental.** When `true`, the React adapter publishes router state to React as one immutable _render frame_ per navigation, instead of through the individual store subscriptions that `useSyncExternalStore` backs.
+- Enable it if you need React's `<ViewTransition>` — or any other transition-only behaviour — to engage across a navigation. Router state otherwise reaches components through `useSyncExternalStore`, which React schedules at a synchronous lane from the store's own subscription callback, after the `startTransition` scope has exited. That update is therefore never a transition, and `<ViewTransition>` only runs for transitions.
+- Selector behaviour is unchanged: a consumer re-renders only when its own selection changes.
+
+Two behaviour changes to know about before enabling it:
+
+- **A client-rendered app does not present route pending UI on a navigation.** Suspension consolidates at a single boundary around the route tree, so that a frame is published and acknowledged atomically. On the first render that boundary mounts with the route tree, so its fallback — built from the root route — is shown as usual. On a later navigation it is already mounted, and the navigation is a transition: React keeps the route on screen rather than replacing it with a fallback. So for client navigations `pendingComponent` is not rendered, and `pendingMs` and `pendingMinMs` have nothing to time. That is the concurrent behaviour the option exists to produce — the previous route stays visible until the next one is ready — but it is a behaviour change, so provide progress UI outside the route tree, or from the route being left, using `status` and `isLoading`, which stay live throughout. **A server-rendered app keeps its route-level boundaries** — that is what its streamed HTML describes, and the boundary decides an element type, so it cannot appear once hydration finishes without remounting the route tree. Such an app therefore gives up atomic acknowledgement: a child that suspends resolves at its own boundary, so a frame can be acknowledged while part of the tree is still pending, exactly as it is without this option.
+- **`location` and `matches` lag the imperative head while a navigation is in flight**, by design: a component that renders during a navigation observes the route on screen rather than the one being prepared. `status` and `isLoading` are deliberately exempt, so progress UI still sees a navigation start and finish. An explicit `matchRoute({ pending: true })` also still resolves against the head, so destination-aware indicators keep working, and so does `useCanGoBack`: `history.back()` acts on the browser's history rather than on the frame on screen, so the answer has to describe the history the control would actually move.
+- **`InnerWrap` is outside the route tree, so it reads the committed route.** It wraps the whole match tree, and like any consumer outside that tree it advances only when a navigation commits — deliberately, so the visible surroundings do not jump to the destination while the old route is still on screen. Something rendered inside it that suspends until it describes the destination would wait for a commit its own suspension prevents; that applies to any outside consumer, not just `InnerWrap`.
+- **An imperative navigation resolves against the route on screen, which is wrong for one caller.** `useNavigate` resolves relative paths and search or param updaters against the publication its position presents, so a handler on the visible route navigates from what the user is looking at rather than from the route being prepared. A destination component calling `navigate` from its *mount* layout effect is the exception: React runs layout effects bottom-up, and the frame commits from an ancestor's, so that call runs before the frame it rendered from has committed and resolves against the route being left. Navigate from an event or a passive effect, or pass `_fromLocation` explicitly, if that matters to you.
+- **A reader with no previous answer can see the route being prepared.** A consumer that mounts during a navigation, or whose `select` function changes while one is in flight, has no earlier selection to compare against and no way to tell which tree is rendering it, so that first render can read the staged route rather than the visible one. Consumers already mounted with a stable selector are isolated.
+- **Replacing the router under a mounted provider does not change which path the tree uses.** Whether a component reads through the frame path is decided at its first render, because that decision gates which hooks it calls; a component handed a router configured the other way would otherwise change hook shape and crash on the hook order. The consequence is that swapping a router for one with a different setting leaves the tree on the setting it mounted with — enabling the option on a replacement router does not activate it. Recreate the tree (a fresh `RouterProvider`, or a `key` on it) when you replace a router with one configured differently.
+- **Every reader goes through the frame path, including one that names a router explicitly.** `useRouterState({ router })` pointing at a router with no provider above it reads that router's store head — the same content as before — but through React state rather than `useSyncExternalStore`, so its updates are no longer flushed synchronously.
+
+```tsx
+const router = createRouter({
+  routeTree,
+  experimental_concurrentRenderFrames: true,
+})
+```

@@ -4,6 +4,11 @@ import * as React from 'react'
 import { hasKeys } from '@tanstack/router-core'
 import { Matches } from './Matches'
 import { routerContext } from './routerContext'
+import {
+  RouterStateProvider,
+  RouterStateStorePath,
+  useFrameMode,
+} from './routerStateContext'
 import type {
   AnyRouter,
   RegisteredRouter,
@@ -36,9 +41,21 @@ export function RouterContextProvider<
     })
   }
 
+  // Frozen, like every other branch on the option: swapping the router for
+  // one configured differently must not unmount the whole tree. Published on
+  // both arms, so a reader mounting later agrees with this tree whichever way
+  // it went — only the frame path builds an owner to carry it.
+  const childrenWithState = useFrameMode(router as AnyRouter) ? (
+    <RouterStateProvider router={router}>{children}</RouterStateProvider>
+  ) : (
+    <RouterStateStorePath router={router as AnyRouter}>
+      {children}
+    </RouterStateStorePath>
+  )
+
   const provider = (
     <routerContext.Provider value={router as AnyRouter}>
-      {children}
+      {childrenWithState}
     </routerContext.Provider>
   )
 
