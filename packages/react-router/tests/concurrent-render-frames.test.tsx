@@ -3309,14 +3309,14 @@ describe('concurrent render frames', () => {
       experimental_concurrentRenderFrames: false,
     })
 
-    let unmountStored: (() => void) | undefined
+    const unmountStored: { current?: () => void } = {}
     router.subscribe('onLoad', () => {
-      unmountStored?.()
+      unmountStored.current?.()
     })
 
     const stored = render(<RouterProvider router={router} />)
     await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
-    unmountStored = () => stored.unmount()
+    unmountStored.current = () => stored.unmount()
 
     const navigation = router.navigate({ to: '/other' })
     navigation.catch(() => {})
@@ -3411,14 +3411,14 @@ describe('concurrent render frames', () => {
 
       // Unmount from `onLoad`, which core emits inside the transition
       // callback: the offer is outstanding and nothing has acknowledged it.
-      let unmountStored: (() => void) | undefined
+      const unmountStored: { current?: () => void } = {}
       router.subscribe('onLoad', () => {
-        unmountStored?.()
+        unmountStored.current?.()
       })
 
       const stored = render(<RouterProvider router={router} />)
       await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
-      unmountStored = () => stored.unmount()
+      unmountStored.current = () => stored.unmount()
 
       let settled = false
       const navigation = router.navigate({ to: '/other' })
@@ -3461,6 +3461,209 @@ describe('concurrent render frames', () => {
       'from=false flip=false settled=true',
       'from=true flip=false settled=true',
     ])
+  })
+
+  /**
+   * A superseded pending frame does not block a resync.
+   *
+   * An owner outlives its trees, and a frame staged but never acknowledged —
+   * its tree suspended, then unmounted — stays in `pending`. Nothing can
+   * commit it afterwards: `owner.pending` refuses to hand it out and `commit`
+   * cancels it. What it could still do is block `resync`, so a later
+   * frame-path mount rendered the route from *before* that frame while the
+   * router had since navigated somewhere else entirely on the store path —
+   * and ran its effects, which is how a `<Navigate>` there would fire.
+   *
+   * Asserted on mount effects rather than on screen, for the usual reason:
+   * the correction lands before paint, so the screen looks right while the
+   * stale route has already mounted.
+   */
+  test('a superseded pending frame does not block a resync', async () => {
+    const gate = deferred()
+    const suspend = deferred()
+    const mounted: Array<string> = []
+    let seeded: string | undefined
+
+    function CaptureOwner({ children }: { children?: React.ReactNode }) {
+      const owner = useRouterStateOwner()
+      if (owner && seeded === undefined) {
+        seeded = `${owner.frame.location.pathname}|${owner.frame.matches
+          .map((match) => match.routeId)
+          .join('+')}`
+      }
+      return <>{children}</>
+    }
+
+    const track = (name: string) =>
+      function Tracked() {
+        React.useEffect(() => {
+          mounted.push(name)
+        }, [])
+        return <h1>{name}</h1>
+      }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: track('index'),
+    })
+    const stagedRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/staged',
+      loader: () => gate.promise,
+      // Suspends for the rest of the test, so its frame is staged and never
+      // acknowledged, and the owner still holds it after the unmount.
+      component: function StagedRoute(): React.ReactNode {
+        throw suspend.promise
+      },
+    })
+    const nextRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/next',
+      component: track('next'),
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, stagedRoute, nextRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: true,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'index' }))
+    const staging = router.navigate({ to: '/staged' })
+    staging.catch(() => {})
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+    first.unmount()
+
+    // The store path navigates on, with nothing driving the owner.
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: false,
+      })
+    })
+    const stored = render(<RouterProvider router={router} />)
+    await act(async () => {
+      await router.navigate({ to: '/next' })
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'next' }))
+    stored.unmount()
+
+    // Back on the frame path, onto the cached owner.
+    mounted.length = 0
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+        InnerWrap: CaptureOwner,
+      })
+    })
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The route the router is on, and only that one.
+    expect(seeded).toBe('/next|__root__+/next')
+    expect(mounted).toEqual(['next'])
+  })
+
+  /**
+   * A provider handed a router that holds a foreign offer settles it.
+   *
+   * The mismatch between an acknowledgement's representation and the tree
+   * that has to satisfy it does not need a mount: a mounted provider handed a
+   * *different* router inherits that router's outstanding offer, which may
+   * have been made to a tree on the other path. The load is already in
+   * flight, so nothing starts another one, and the navigation promise never
+   * settles.
+   *
+   * The acknowledgement slot is per router, so the normalization runs when
+   * the router changes rather than only when the provider mounts. Reads
+   * `settled=false` / `pending` with a mount-only effect.
+   */
+  test('a provider handed a router holding a foreign offer settles it', async () => {
+    const suspend = deferred()
+    let released = false
+
+    const build = (frames: boolean) => {
+      const rootRoute = createRootRoute({ component: () => <Outlet /> })
+      const indexRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/',
+        component: () => <h1>Index Title</h1>,
+      })
+      const otherRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/other',
+        component: function OtherComponent() {
+          if (!released) {
+            throw suspend.promise
+          }
+          return <h1>Other Title</h1>
+        },
+      })
+      return createRouter({
+        routeTree: rootRoute.addChildren([indexRoute, otherRoute]),
+        defaultPendingMs: 0,
+        experimental_concurrentRenderFrames: frames,
+      })
+    }
+
+    const mountedRouter = build(true)
+    const swapped = build(false)
+
+    // The swapped-to router runs a store-path navigation whose tree unmounts
+    // from `onLoad`, leaving its offer outstanding as published matches.
+    const unmountStored: { current?: () => void } = {}
+    swapped.subscribe('onLoad', () => {
+      unmountStored.current?.()
+    })
+    const stored = render(<RouterProvider router={swapped} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    unmountStored.current = () => stored.unmount()
+
+    let settled = false
+    const navigation = swapped.navigate({ to: '/other' })
+    navigation.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // It is now configured for frames, and a mounted frame-path provider is
+    // handed it without unmounting.
+    swapped.update({
+      ...swapped.options,
+      experimental_concurrentRenderFrames: true,
+    })
+    const provider = render(<RouterProvider router={mountedRouter} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    provider.rerender(<RouterProvider router={swapped} />)
+
+    released = true
+    suspend.resolve()
+    await act(async () => {
+      await suspend.promise
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(swapped.stores.status.get()).toBe('idle'))
+    expect(settled).toBe(true)
   })
 
   /**

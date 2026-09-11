@@ -419,7 +419,20 @@ function createOwner(router: AnyRouter): RouterStateOwner {
       // advances toward the publication `publish` would have reached anyway;
       // where a tree is already mounted and subscribed, that tree has kept the
       // owner current and this is a no-op.
-      if (staging || pending || route.staged) {
+      if (staging) {
+        return
+      }
+      if (pending && isSuperseded(pending, router.stores.__store.get())) {
+        // A frame the head has left cannot commit — `owner.pending` already
+        // refuses to hand it out, and `commit` cancels it — but while it sits
+        // here it blocks this resync, and the tree renders a route two
+        // navigations behind. Dropping it is the same conclusion `publish`
+        // reaches, minus the notification: this runs during render, and the
+        // provider's own subscription republishes once it is mounted.
+        pending = undefined
+        route.staged = undefined
+      }
+      if (pending || route.staged) {
         return
       }
       const next = initialFrame(router)

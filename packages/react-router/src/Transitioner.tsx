@@ -69,17 +69,22 @@ export function Transitioner({
   // Settle it as unrendered, which is exactly what a navigation gets when
   // nothing is mounted to acknowledge it at all: the load resolves, and this
   // tree renders the publication from the store like any other reader.
+  //
+  // Not mount-only: a mounted provider handed a different router inherits
+  // that router's outstanding offer, which may have been made to a tree on
+  // the other path, so the same mismatch arrives without a mount. The
+  // acknowledgement slot is per router, so it changes with the router; the
+  // owner changes with it, and with the path this tree is on.
   useLayoutEffect(() => {
-    const offered = acknowledgement[0 /* offered */]
+    const slot = (router._rendered ??= [])
+    const offered = slot[0 /* offered */]
     const satisfiable = routerStateOwner
       ? typeof offered === 'number'
       : Array.isArray(offered)
-    if (acknowledgement.length && !satisfiable) {
-      settleOwner(acknowledgement, false)
+    if (slot.length && !satisfiable) {
+      settleOwner(slot, false)
     }
-    // Mount only: a tree offers in its own representation from then on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [router, routerStateOwner])
 
   // Subscribe before canonicalizing so the initial URL has exactly one load.
   useLayoutEffect(() => {
