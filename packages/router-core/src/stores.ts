@@ -85,6 +85,14 @@ export interface RouterStores<in out TRouteTree extends AnyRoute> {
   ) => RouterReadableStore<AnyRouteMatch | undefined>
 
   setMatches: (nextMatches: Array<AnyRouteMatch>) => void
+
+  /**
+   * One identity from the counter `__store` assembles with, for a state a
+   * framework adapter builds itself rather than reading from here. Sharing the
+   * counter keeps `frameId` monotonic and collision-free across both kinds of
+   * assembly, which is the contract `RouterState` documents.
+   */
+  mintFrameId: () => number
 }
 
 export function createRouterStores<TRouteTree extends AnyRoute>(
@@ -172,6 +180,18 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
 
     // methods
     setMatches,
+    mintFrameId,
+  }
+
+  /**
+   * One identity from the counter the aggregate uses, for a state a framework
+   * adapter assembles itself rather than reading from here — a presentation
+   * reconstructed for a tree that mounts mid-navigation, say. Sharing the
+   * counter is what keeps `frameId` monotonic and collision-free across both
+   * kinds of assembly, which is the contract `RouterState` documents.
+   */
+  function mintFrameId() {
+    return nextFrameId++
   }
 
   // setters to update non-reactive utilities in sync with the reactive stores

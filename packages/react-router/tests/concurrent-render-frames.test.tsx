@@ -2964,7 +2964,13 @@ describe('concurrent render frames', () => {
     expect(router.stores.location.get().pathname).toBe('/slow')
 
     const seededId = Number(screen.getByTestId('frame-id').textContent)
-    expect(seededId).not.toBe(router.stores.__store.get().frameId)
+    const headId = router.stores.__store.get().frameId
+    expect(seededId).not.toBe(headId)
+    // And it is an identity from core's own sequence, not one invented
+    // outside it: the contract consumers order snapshots by is that each
+    // assembly takes a new, larger value.
+    expect(seededId).toBeGreaterThan(headId)
+    expect(Number.isInteger(seededId)).toBe(true)
 
     gate.resolve()
     await act(async () => {
@@ -2972,10 +2978,10 @@ describe('concurrent render frames', () => {
     })
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
     // And the publication that follows carries core's identity, not the
-    // reconstruction's.
-    expect(Number(screen.getByTestId('frame-id').textContent)).toBe(
-      router.stores.__store.get().frameId,
-    )
+    // reconstruction's — larger again, since it was assembled later.
+    const settledId = Number(screen.getByTestId('frame-id').textContent)
+    expect(settledId).toBe(router.stores.__store.get().frameId)
+    expect(settledId).toBeGreaterThan(seededId)
   })
 
   /**

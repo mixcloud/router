@@ -325,14 +325,16 @@ export function RouterStateStorePath({
  * content, and this frame's content is by construction *not* the head's, so
  * carrying the head's id would put two different publications under one
  * identity — which is what an acknowledgement is matched against, and what
- * `publish` compares to decide that content has not moved. Core counts its
- * ids up from zero, so counting down from below zero here cannot collide with
- * a publication, and a consumer versioning a cache on `frameId` sees a
- * snapshot distinct from both the publication being left and the one being
- * prepared.
+ * `publish` compares to decide that content has not moved.
+ *
+ * It takes that identity from core's own counter rather than inventing one.
+ * The documented contract is that every state the router assembles gets a
+ * new, larger value, and consumers may order snapshots by it, so an id from
+ * outside the sequence would read as older than everything and successive
+ * reconstructions would run backwards. Minting is also what core does when a
+ * navigation returns to content it has shown before: the identity orders
+ * assemblies, not routes, and this assembly is the newest one.
  */
-let reconstructedFrameId = 0
-
 function initialFrame(router: AnyRouter): RouterRenderFrame {
   const head = router.stores.__store.get()
   const resolved = router.stores.resolvedLocation.get()
@@ -349,7 +351,7 @@ function initialFrame(router: AnyRouter): RouterRenderFrame {
   }
   return {
     ...head,
-    frameId: --reconstructedFrameId,
+    frameId: router.stores.mintFrameId(),
     location: resolved,
     matches: resolvedMatches,
   }
@@ -621,16 +623,52 @@ export function RouterStateProvider({
   router: AnyRouter
   children: React.ReactNode
 }) {
+  // The server renders once and has no staged successor, so nothing here is
+  // reactive: no owner — it carries subscriber sets and a cached presentation,
+  // which is UI state a server render must not build — and no state to freeze
+  // a decision that cannot change. Readers resolve to a detached scope over
+  // the store head instead, which is the same publication an owner would have
+  // been seeded with, so the markup is identical to the client's hydration
+  // render and the client builds the owner at hydration.
+  //
+  // Branching here rather than inside the client component keeps every hook
+  // on the client path, where the branch is eliminated with the condition.
+  if (isServer ?? router.isServer) {
+    return (
+      <routerStateOwnerContext.Provider value={undefined}>
+        <routerStateFrameModeContext.Provider
+          value={{
+            router,
+            frameMode: Boolean(
+              router.options.experimental_concurrentRenderFrames,
+            ),
+          }}
+        >
+          <routerStateScopeContext.Provider value={undefined}>
+            {children}
+          </routerStateScopeContext.Provider>
+        </routerStateFrameModeContext.Provider>
+      </routerStateOwnerContext.Provider>
+    )
+  }
+  return (
+    <RouterStateClientProvider router={router}>
+      {children}
+    </RouterStateClientProvider>
+  )
+}
+
+function RouterStateClientProvider({
+  router,
+  children,
+}: {
+  router: AnyRouter
+  children: React.ReactNode
+}) {
   // Keyed by router identity. A mounted provider can be handed a different
   // router — a test rerender, HMR, switching tenant — and an owner built for
   // the previous one would keep reading and staging that router's state.
-  //
-  // Not on the server: an owner carries subscriber sets and a cached
-  // presentation, which is UI state a server render must not build. Readers
-  // there resolve to a detached scope over the store head instead, which is
-  // the same publication an owner would have been seeded with, so the render
-  // is identical and the client builds the owner at hydration.
-  const owner = (isServer ?? router.isServer) ? undefined : ownerFor(router)
+  const owner = ownerFor(router)
   // The tree's decision: the option as it stands when this provider mounts,
   // kept for as long as it is mounted. Read from the router rather than from
   // the owner, because an owner is cached for its router's lifetime — a
@@ -641,9 +679,6 @@ export function RouterStateProvider({
   )
 
   useLayoutEffect(() => {
-    if (!owner) {
-      return
-    }
     const subscription = router.stores.__store.subscribe(() => owner.publish())
     owner.publish()
     return () => subscription.unsubscribe()
@@ -652,7 +687,7 @@ export function RouterStateProvider({
   return (
     <routerStateOwnerContext.Provider value={owner}>
       <RouterStateFrameMode router={router} frameMode={frameMode}>
-        <routerStateScopeContext.Provider value={owner?.root}>
+        <routerStateScopeContext.Provider value={owner.root}>
           {children}
         </routerStateScopeContext.Provider>
       </RouterStateFrameMode>

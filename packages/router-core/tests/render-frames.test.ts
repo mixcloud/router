@@ -58,6 +58,26 @@ describe('render frames', () => {
   })
 
   /**
+   * A framework adapter sometimes assembles a state itself rather than reading
+   * one from here — a presentation reconstructed for a tree that mounts in the
+   * middle of a navigation, say. It mints the identity from this counter, so
+   * ordering holds across both kinds of assembly: an adapter's identity never
+   * collides with a publication's, and neither runs backwards.
+   */
+  test('a minted identity continues the same sequence', async () => {
+    const router = createRouter()
+
+    const first = router.stores.__store.get().frameId
+    const minted = router.stores.mintFrameId()
+    await router.navigate({ to: '/about' })
+    const afterNavigation = router.stores.__store.get().frameId
+
+    expect(minted).toBeGreaterThan(first)
+    expect(afterNavigation).toBeGreaterThan(minted)
+    expect(router.stores.mintFrameId()).toBeGreaterThan(afterNavigation)
+  })
+
+  /**
    * The SSR store is non-reactive: its getter runs again for every reader. So
    * counting reads rather than publications gave two consumers in one server
    * render different identities for the same route content, and anything an
