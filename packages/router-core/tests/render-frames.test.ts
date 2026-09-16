@@ -58,6 +58,44 @@ describe('render frames', () => {
   })
 
   /**
+   * The acknowledged pair follows a background publication.
+   *
+   * `_resolvedMatches` is the generation `resolvedLocation` resolved for, and
+   * a background loader finishing republishes the *same* location with newer
+   * data. Left behind, the pair would carry pre-refresh matches, and a
+   * framework adapter reconstructing the acknowledged publication from it —
+   * for a tree mounting mid-navigation — would roll the visible route back to
+   * that data for the length of the navigation.
+   */
+  test('a background publication keeps the resolved matches in step', async () => {
+    let revision = 0
+    const rootRoute = new BaseRootRoute({})
+    const postsRoute = new BaseRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      loader: () => ++revision,
+    })
+    const history = createMemoryHistory({ initialEntries: ['/posts'] })
+    const router = createTestRouter({
+      routeTree: rootRoute.addChildren([postsRoute]),
+      history,
+    })
+    try {
+      await router.load()
+      expect(router._resolvedMatches).toBe(router._committed)
+
+      // A background refresh republishes the visible matches.
+      await router.invalidate()
+      await expect.poll(() => router.state.matches[1]?.loaderData).toBe(2)
+
+      expect(router._resolvedMatches).toBe(router._committed)
+      expect(router._resolvedMatches[1]?.loaderData).toBe(2)
+    } finally {
+      history.destroy()
+    }
+  })
+
+  /**
    * A framework adapter sometimes assembles a state itself rather than reading
    * one from here — a presentation reconstructed for a tree that mounts in the
    * middle of a navigation, say. It mints the identity from this counter, so

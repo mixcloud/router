@@ -1792,6 +1792,17 @@ async function runBackground(
     }
   }
   publishMatches(router, next)
+  // The same location, rendered newer. `_resolvedMatches` is the generation
+  // `resolvedLocation` resolved for, so left behind it would pair that
+  // location with pre-refresh data — and a framework adapter reconstructing
+  // the acknowledged publication from the pair would roll the visible route
+  // back to it for the length of the next navigation. Only where the resolved
+  // snapshot is the generation this publication replaces: a *foreground*
+  // commit advances `_committed` to a destination `resolvedLocation` has not
+  // reached yet, which is the window the pair exists to describe.
+  if (router._resolvedMatches === base) {
+    router._resolvedMatches = next
+  }
   transferMatchResources(router, base, next)
 }
 
