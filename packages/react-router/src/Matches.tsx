@@ -56,6 +56,20 @@ declare module '@tanstack/router-core' {
  */
 export function Matches() {
   const router = useRouter()
+  // The server renders once: nothing stages a frame, nothing is adopted and no
+  // dispatch can arrive, so the queue bookkeeping below is client-only
+  // reactivity. Branching before it rather than around it keeps it out of the
+  // server render entirely and lets it be eliminated with the condition.
+  if (isServer ?? router.isServer) {
+    return <MatchesShell router={router} setRenderFrame={noRenderFrame} />
+  }
+  return <MatchesFrameQueue router={router} />
+}
+
+/** The server has no queue to write to, and nothing to write to it. */
+const noRenderFrame = () => {}
+
+function MatchesFrameQueue({ router }: { router: AnyRouter }) {
   const routerStateOwner = useRouterStateOwner()
   // Queued per router, because a router swapped under a mounted provider keeps
   // its own navigation in flight — along with the `startTransition` override
@@ -141,6 +155,28 @@ export function Matches() {
     [router],
   )
   const activeFrame = renderFrame ?? routerStateOwner?.frame
+
+  return (
+    <MatchesShell
+      router={router}
+      activeFrame={activeFrame}
+      renderFrame={renderFrame}
+      setRenderFrame={setRenderFrame}
+    />
+  )
+}
+
+function MatchesShell({
+  router,
+  activeFrame,
+  renderFrame,
+  setRenderFrame,
+}: {
+  router: AnyRouter
+  activeFrame?: RouterRenderFrame
+  renderFrame?: RouterRenderFrame
+  setRenderFrame: (frame: RouterRenderFrame | undefined) => void
+}) {
   const rootRoute: AnyRoute = router.routesById[rootRouteId]
 
   const pendingElement = renderPending(router, rootRoute)
