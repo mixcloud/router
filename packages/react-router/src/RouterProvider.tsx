@@ -45,8 +45,11 @@ export function RouterContextProvider<
   // one configured differently must not unmount the whole tree. Published on
   // both arms, so a reader mounting later agrees with this tree whichever way
   // it went — only the frame path builds an owner to carry it.
-  const childrenWithState = useFrameMode(router as AnyRouter) ? (
-    <RouterStateProvider router={router}>{children}</RouterStateProvider>
+  const frameMode = useFrameMode(router as AnyRouter)
+  const childrenWithState = frameMode ? (
+    <RouterStateProvider router={router} frameMode={frameMode}>
+      {children}
+    </RouterStateProvider>
   ) : (
     <RouterStateStorePath router={router as AnyRouter}>
       {children}

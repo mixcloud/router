@@ -618,11 +618,27 @@ function ownerFor(router: AnyRouter): RouterStateOwner {
 
 export function RouterStateProvider({
   router,
+  frameMode,
   children,
 }: {
   router: AnyRouter
+  /**
+   * The decision that selected this arm, from the caller's own `useFrameMode`.
+   *
+   * Reading the option again here would let the two disagree: a provider
+   * mounting inside a frame-path tree takes the frame arm from the tree's
+   * frozen answer, so re-reading an option that has since changed published
+   * the store path to its descendants while this provider still built an
+   * owner. Its `Transitioner` then offers a frame identity into an
+   * acknowledgement its own `Matches` reads as matches, and the navigation
+   * never settles. Falls back to the option for a caller that decides
+   * nothing — the tests that mount this provider directly.
+   */
+  frameMode?: boolean
   children: React.ReactNode
 }) {
+  const decided =
+    frameMode ?? Boolean(router.options.experimental_concurrentRenderFrames)
   // The server renders once and has no staged successor, so nothing here is
   // reactive: no owner — it carries subscriber sets and a cached presentation,
   // which is UI state a server render must not build — and no state to freeze
@@ -636,14 +652,7 @@ export function RouterStateProvider({
   if (isServer ?? router.isServer) {
     return (
       <routerStateOwnerContext.Provider value={undefined}>
-        <routerStateFrameModeContext.Provider
-          value={{
-            router,
-            frameMode: Boolean(
-              router.options.experimental_concurrentRenderFrames,
-            ),
-          }}
-        >
+        <routerStateFrameModeContext.Provider value={{ router, frameMode: decided }}>
           <routerStateScopeContext.Provider value={undefined}>
             {children}
           </routerStateScopeContext.Provider>
@@ -652,7 +661,7 @@ export function RouterStateProvider({
     )
   }
   return (
-    <RouterStateClientProvider router={router}>
+    <RouterStateClientProvider router={router} frameMode={decided}>
       {children}
     </RouterStateClientProvider>
   )
@@ -660,23 +669,25 @@ export function RouterStateProvider({
 
 function RouterStateClientProvider({
   router,
+  frameMode: decided,
   children,
 }: {
   router: AnyRouter
+  frameMode: boolean
   children: React.ReactNode
 }) {
   // Keyed by router identity. A mounted provider can be handed a different
   // router — a test rerender, HMR, switching tenant — and an owner built for
   // the previous one would keep reading and staging that router's state.
   const owner = ownerFor(router)
-  // The tree's decision: the option as it stands when this provider mounts,
-  // kept for as long as it is mounted. Read from the router rather than from
-  // the owner, because an owner is cached for its router's lifetime — a
-  // router that was once mounted with the option off would otherwise be
-  // stuck on the store path in every later tree, whatever the option says.
-  const [frameMode] = React.useState(() =>
-    Boolean(router.options.experimental_concurrentRenderFrames),
-  )
+  // The tree's decision, kept for as long as this provider is mounted. It is
+  // the same answer that selected this arm rather than a fresh read of the
+  // option, so what this provider publishes cannot disagree with the path it
+  // is on. That answer comes from `useFrameMode`, which prefers an enclosing
+  // tree's frozen decision and falls back to the option — never from the
+  // owner, which is cached for the router's lifetime and would strand a
+  // router first mounted with the option off on the store path for good.
+  const [frameMode] = React.useState(decided)
 
   useLayoutEffect(() => {
     const subscription = router.stores.__store.subscribe(() => owner.publish())

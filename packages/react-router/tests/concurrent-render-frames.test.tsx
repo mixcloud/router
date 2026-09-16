@@ -736,6 +736,77 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
   })
 
   /**
+   * A provider publishes the decision that selected its arm, not a fresh read
+   * of the option.
+   *
+   * `RouterProvider` chooses the frame arm from `useFrameMode`, which prefers
+   * an enclosing tree's frozen answer. The provider then froze its own answer
+   * by re-reading the option — so a provider mounting inside a frame-path tree
+   * after the option moved took the frame arm, built an owner, and published
+   * the *store* path to its descendants. Its `Transitioner` offers a frame
+   * identity into an acknowledgement its own `Matches` reads as matches, and
+   * the navigation never settles.
+   *
+   * Asserted on the two halves of the disagreement together — the published
+   * mode and whether an owner exists — because either alone is consistent.
+   * Reads `false|owner` without the fix.
+   */
+  test('a nested provider publishes the decision that selected its arm', async () => {
+    let show!: (value: boolean) => void
+
+    function Report() {
+      const mode = useFrameMode(router)
+      const owner = useRouterStateOwner()
+      return (
+        <div data-testid="report">{`${String(mode)}|${owner ? 'owner' : 'none'}`}</div>
+      )
+    }
+
+    function Nested() {
+      const [mounted, setMounted] = React.useState(false)
+      show = setMounted
+      return mounted ? (
+        <RouterContextProvider router={router}>
+          <Report />
+        </RouterContextProvider>
+      ) : null
+    }
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => (
+        <>
+          <h1>Index Title</h1>
+          <Nested />
+        </>
+      ),
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute]),
+      experimental_concurrentRenderFrames: true,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // The option moves under the mounted tree, which froze `true`.
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: false,
+      })
+    })
+    act(() => {
+      show(true)
+    })
+
+    expect(screen.getByTestId('report')).toHaveTextContent('true|owner')
+  })
+
+  /**
    * A render whose head moves inside its own commit runs its effects anyway,
    * on both paths. Adoption refuses a staged frame the head has already left,
    * and `commit` refuses it again, but neither can reach a render React has
