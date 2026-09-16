@@ -864,6 +864,18 @@ export function useRouterStateSelector<TSelected>(
    */
   presentedFrame?: React.MutableRefObject<(() => RouterRenderFrame) | undefined>,
 ): TSelected {
+  // The server has one publication and nothing to subscribe to, so it selects
+  // from the head directly. Before the scope, deliberately: a server render
+  // has no owner scope, so resolving one would build a detached scope —
+  // subscriber set and all — and cache it for the router's lifetime, which is
+  // router reactivity the server must not create. The value is the same, since
+  // a detached scope's committed publication *is* the head and nothing is
+  // staged there.
+  if (isServer ?? router.isServer) {
+    return selector(router.stores.__store.get())
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   const ownerScope = React.useContext(routerStateScopeContext)
   // Not conditional on anything that can change: whichever scope this reader
   // resolves to, the hooks below run, in this order, on every render.
@@ -871,12 +883,6 @@ export function useRouterStateSelector<TSelected>(
     ownerScope && ownerScope.router === router
       ? ownerScope
       : detachedScope(router)
-
-  if (isServer ?? router.isServer) {
-    // One render, no reactivity, so nothing to subscribe to. `offeredFrame` is
-    // what the client path would resolve on its first render.
-    return selector(offeredFrame(scope))
-  }
 
   // Which publication this consumer is presenting. It lives in React state, so
   // React versions it per tree: a work-in-progress render can accept the staged
