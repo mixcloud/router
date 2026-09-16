@@ -230,26 +230,30 @@ export function useMatch<
   const routeId = opts.from ?? nearestRouteId
   const matchStore = router.stores.getMatchStore(routeId!)
 
-  if (!useFrameMode(router)) {
-    if (isServer ?? router.isServer) {
-      const match = matchStore.get()
-      if (!match) {
-        if (opts.shouldThrow ?? true) {
-          if (process.env.NODE_ENV !== 'production') {
-            throw new Error(
-              `Invariant failed: Could not find ${opts.from ? `an active match from "${opts.from}"` : 'a nearest match!'}`,
-            )
-          }
-
-          invariant()
+  // The server first, so neither reactive branch below is reached there,
+  // whichever way the option is set: a frame path would resolve the head,
+  // which is what this match store holds.
+  if (isServer ?? router.isServer) {
+    const match = matchStore.get()
+    if (!match) {
+      if (opts.shouldThrow ?? true) {
+        if (process.env.NODE_ENV !== 'production') {
+          throw new Error(
+            `Invariant failed: Could not find ${opts.from ? `an active match from "${opts.from}"` : 'a nearest match!'}`,
+          )
         }
 
-        return undefined as any
+        invariant()
       }
 
-      return (opts.select ? opts.select(match as any) : match) as any
+      return undefined as any
     }
 
+    return (opts.select ? opts.select(match as any) : match) as any
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (!useFrameMode(router)) {
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     const selector = useStructuralSharing(opts, router)
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount

@@ -237,6 +237,18 @@ export function RouterStateFrameMode({
   frameMode: boolean
   children: React.ReactNode
 }) {
+  // The memo exists to keep the context value stable across re-renders, which
+  // the server, rendering once, has no use for. Branch before it rather than
+  // memoize a value nothing will compare.
+  if (isServer ?? router.isServer) {
+    return (
+      <routerStateFrameModeContext.Provider value={{ router, frameMode }}>
+        {children}
+      </routerStateFrameModeContext.Provider>
+    )
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   const value = React.useMemo(
     () => ({ router, frameMode }),
     [router, frameMode],

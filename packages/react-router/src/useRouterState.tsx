@@ -58,19 +58,13 @@ export function useRouterState<
   })
   const router = opts?.router || contextRouter
 
-  if (useFrameMode(router)) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
-    return useRouterStateSelector(
-      router,
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
-      useStructuralSharing(opts, router),
-    ) as UseRouterStateResult<TRouter, TSelected>
-  }
-
   // During SSR we render exactly once and do not need reactivity.
   // Avoid subscribing to the store (and any structural sharing work) on the server.
   // The expression must stay inlined in the `if` so bundlers fold the
   // browser-build constant `isServer = false` and drop this server block.
+  //
+  // First, so the frame branch below is not reached there either: the head is
+  // what it would resolve to on the server anyway, with no publication staged.
   if (isServer ?? router.isServer) {
     const state = router.stores.__store.get() as RouterState<
       TRouter['routeTree']
@@ -79,6 +73,16 @@ export function useRouterState<
       TRouter,
       TSelected
     >
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    return useRouterStateSelector(
+      router,
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+      useStructuralSharing(opts, router),
+    ) as UseRouterStateResult<TRouter, TSelected>
   }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static

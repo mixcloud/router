@@ -19,16 +19,18 @@ export function CatchNotFound(props: {
   const router = useRouter()
   let pathname: string
   let status: 'pending' | 'idle'
-  if (useFrameMode(router)) {
+  // The server first, so neither reactive branch is reached there.
+  if (isServer ?? router.isServer) {
+    pathname = router.stores.location.get().pathname
+    status = router.stores.status.get()
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- server branch above, condition is static
+  } else if (useFrameMode(router)) {
     // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
     ;[pathname, status] = useRouterStateSelector(
       router,
       (state) => [state.location.pathname, state.status] as const,
       (a, b) => a[0] === b[0] && a[1] === b[1],
     )
-  } else if (isServer ?? router.isServer) {
-    pathname = router.stores.location.get().pathname
-    status = router.stores.status.get()
   } else {
     // TODO: Some way for the user to programmatically reset the not-found boundary?
     // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static

@@ -93,6 +93,14 @@ export const Match = React.memo(function MatchImpl({
   routeId: string
 }) {
   const router = useRouter()
+  // The server first, so the frame branch below is not reached there: it would
+  // resolve to the head, which is what this reads directly.
+  if (isServer ?? router.isServer) {
+    const match = router.stores.byRoute.get(routeId)!.get()!
+    return <MatchView router={router} match={match} />
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   if (useFrameMode(router)) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const match = useRouterStateSelector(router, (state) =>
@@ -105,11 +113,6 @@ export const Match = React.memo(function MatchImpl({
     if (!match) {
       return null
     }
-    return <MatchView router={router} match={match} />
-  }
-
-  if (isServer ?? router.isServer) {
-    const match = router.stores.byRoute.get(routeId)!.get()!
     return <MatchView router={router} match={match} />
   }
 
