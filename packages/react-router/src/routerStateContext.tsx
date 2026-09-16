@@ -743,8 +743,19 @@ export function RouterStateFrame({ children }: { children: React.ReactNode }) {
 export function usePresentedLocation(
   router: AnyRouter,
 ): (() => RouterRenderFrame['location'] | undefined) | undefined {
+  // Nothing is presented on the server: one render, no staged successor, and
+  // an imperative navigation there resolves against the head, which is what
+  // `undefined` tells the caller to use. Branch before the hooks rather than
+  // memoize an answer that is always the same.
+  if (isServer ?? router.isServer) {
+    return undefined
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   const scope = React.useContext(routerStateScopeContext)
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   const frameMode = useFrameMode(router)
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   return React.useMemo(() => {
     if (!frameMode || !scope || scope.router !== router) {
       return undefined
