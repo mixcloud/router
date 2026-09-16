@@ -70,8 +70,8 @@ export function RouterContextProvider<
  * Renders the current match presentation and provides the router to the React
  * tree via context.
  *
- * Accepts the same options as `createRouter` via props to update the router
- * instance after creation.
+ * Accepts mutable router options via props. Configure initialization-only
+ * options with `createRouter`.
  *
  * @link https://tanstack.com/router/latest/docs/framework/react/api/router/createRouterFunction
  */
@@ -97,7 +97,7 @@ export type RouterProps<
     TRouter['history'],
     TDehydrated
   >,
-  'context'
+  'context' | 'pathParamsAllowedCharacters'
 > & {
   router: TRouter
   context?: Partial<
