@@ -97,9 +97,24 @@ export function useStructuralSharing<
   TStoreSlice,
   ValidateSelected<TRouter, TSelected, TStructuralSharing>
 > {
+  // The server renders once and has nobody to keep a reference stable for, so
+  // a cache has nothing to do there — and allocating one is router reactivity
+  // during server rendering, which the runtime rules forbid. Branching before
+  // the ref rather than around it also lets the whole allocation be eliminated
+  // with the condition, and callers reach this before any frame-path setup,
+  // which is where `useRouterStateSelector` returns for the server too.
+  if (isServer ?? router.isServer) {
+    return (slice) =>
+      (opts?.select
+        ? opts.select(slice as unknown as TSelectSlice)
+        : slice) as ValidateSelected<TRouter, TSelected, TStructuralSharing>
+  }
+
+  /* eslint-disable react-hooks/rules-of-hooks -- server return above, condition is static */
   const previousResult =
     // @ts-expect-error -- init to undefined, but without writing `undefined` to shave bytes
     React.useRef<ValidateSelected<TRouter, TSelected, TStructuralSharing>>()
+  /* eslint-enable react-hooks/rules-of-hooks */
 
   const select: CacheableSelector<
     TStoreSlice,
