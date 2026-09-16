@@ -3093,6 +3093,118 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * An unrelated re-render does not move a consumer's frame identity.
+   *
+   * `ownerFor` resyncs on every provider render, and a resync mid-navigation
+   * reconstructs the acknowledged publication. Because a reconstruction mints
+   * a fresh identity, comparing identities there found every resync different
+   * and replaced both committed scopes — so a consumer re-reading for an
+   * unrelated reason saw its `frameId` move for a publication nobody staged,
+   * from a render React might yet discard.
+   *
+   * The comparison is on content now, and the identity is spent only once the
+   * content is new. Needs the consumer to re-render for its own reason:
+   * nothing is notified by a resync, so the owner's state moves silently and
+   * only a later read surfaces it.
+   */
+  test('an unrelated re-render does not move the presented frame id', async () => {
+    const gate = deferred()
+    let bump!: (n: number) => void
+    let nudge!: (n: number) => void
+
+    function Probe() {
+      const [local, setLocal] = React.useState(0)
+      nudge = setLocal
+      const frameId = useRouterState({ select: (s) => s.frameId })
+      return <div data-testid="frame-id">{`${String(frameId)}|${local}`}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Probe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: false,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    first.unmount()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+
+    // In flight with nothing mounted, so the next provider reconstructs.
+    const navigation = router.navigate({ to: '/slow' })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    function Wrapper() {
+      const [n, setN] = React.useState(0)
+      bump = setN
+      return (
+        <>
+          <div data-testid="n">{n}</div>
+          <RouterProvider router={router} />
+        </>
+      )
+    }
+
+    render(<Wrapper />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const presented = () =>
+      screen.getByTestId('frame-id').textContent.split('|')[0]
+    const before = presented()
+
+    // A re-render above the provider, which resyncs the owner ...
+    act(() => {
+      bump(1)
+    })
+    // ... and then an unrelated local update in the consumer, so it re-reads.
+    act(() => {
+      nudge(1)
+    })
+
+    expect(presented()).toBe(before)
+
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+    // The navigation itself still moves it.
+    expect(Number(presented())).toBeGreaterThan(Number(before))
+  })
+
+  /**
    * A reconstructed seed does not borrow the head's identity.
    *
    * The seed above is built by taking the head and swapping in the

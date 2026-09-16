@@ -347,8 +347,10 @@ export function RouterStateStorePath({
  * navigation returns to content it has shown before: the identity orders
  * assemblies, not routes, and this assembly is the newest one.
  */
-function initialFrame(router: AnyRouter): RouterRenderFrame {
-  const head = router.stores.__store.get()
+function reconstructedContent(
+  router: AnyRouter,
+  head: RouterRenderFrame,
+): Pick<RouterRenderFrame, 'location' | 'matches'> | undefined {
   const resolved = router.stores.resolvedLocation.get()
   const resolvedMatches = router._resolvedMatches
   // When the location has not moved there is no navigation to be mid-way
@@ -359,14 +361,25 @@ function initialFrame(router: AnyRouter): RouterRenderFrame {
     !resolvedMatches.length ||
     sameLocation(resolved, head.location)
   ) {
+    return undefined
+  }
+  return { location: resolved, matches: resolvedMatches }
+}
+
+/**
+ * The content and its identity are minted together, and only where the frame
+ * is actually taken up. Separating them is what lets a caller ask whether the
+ * reconstruction says anything new before spending an identity on it: minting
+ * first and comparing afterwards makes every comparison unequal by
+ * construction, since the id is fresh each time.
+ */
+function initialFrame(router: AnyRouter): RouterRenderFrame {
+  const head = router.stores.__store.get()
+  const content = reconstructedContent(router, head)
+  if (!content) {
     return head
   }
-  return {
-    ...head,
-    frameId: router.stores.mintFrameId(),
-    location: resolved,
-    matches: resolvedMatches,
-  }
+  return { ...head, frameId: router.stores.mintFrameId(), ...content }
 }
 
 function createOwner(router: AnyRouter): RouterStateOwner {
@@ -462,13 +475,25 @@ function createOwner(router: AnyRouter): RouterStateOwner {
       if (pending || route.staged) {
         return
       }
-      const next = initialFrame(router)
+      // Compared as content, never as identity. A reconstruction mints a new
+      // identity, so comparing ids would find every resync different and
+      // replace both scopes on any re-render that happens to run one — and a
+      // consumer re-reading for an unrelated reason would see its `frameId`
+      // move for a publication nobody staged. The identity is spent only once
+      // the content is genuinely new.
+      const head = router.stores.__store.get()
+      const content = reconstructedContent(router, head)
+      const nextLocation = content?.location ?? head.location
+      const nextMatches = content?.matches ?? head.matches
       if (
-        next.frameId === root.committed.frameId &&
-        sameLocation(next.location, root.committed.location)
+        sameLocation(nextLocation, root.committed.location) &&
+        nextMatches === root.committed.matches
       ) {
         return
       }
+      const next = content
+        ? { ...head, frameId: router.stores.mintFrameId(), ...content }
+        : head
       root.committed = next
       route.committed = next
     },
