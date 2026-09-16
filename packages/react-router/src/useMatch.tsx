@@ -50,14 +50,30 @@ export type CacheableSelector<TSlice, TSelected> = ((
  * Carry a selector's cache handles onto a closure wrapping it, so a caller
  * that selects from a frame through a structural-sharing selector stays
  * probe-safe.
+ *
+ * `fromInner` says whether a value the wrapper produced came from the inner
+ * selector. It does, except where the wrapper answers without running it —
+ * `useMatch` returns a sentinel for an absent match. That matters because the
+ * frame path commits a render by restoring the value it rendered: writing a
+ * sentinel into the inner cache makes structural sharing hand that same
+ * object back for the next deep-equal selection, and the sentinel is compared
+ * by identity, so a match that has since become active reads as absent for as
+ * long as its selection stays deep-equal. Only values the inner selector
+ * produced belong in its cache; skipping the write leaves the previous one
+ * there, which is the stability structural sharing promises anyway.
  */
 export function withSelectorCache<TOuter, TInner, TSelected>(
   wrapper: (slice: TOuter) => TSelected,
   inner: CacheableSelector<TInner, any>,
+  fromInner: (result: TSelected) => boolean = () => true,
 ): CacheableSelector<TOuter, TSelected> {
   const cacheable: CacheableSelector<TOuter, TSelected> = wrapper
   cacheable.snapshotCache = inner.snapshotCache
-  cacheable.restoreCache = inner.restoreCache
+  cacheable.restoreCache = (cached) => {
+    if (fromInner(cached as TSelected)) {
+      inner.restoreCache?.(cached)
+    }
+  }
   return cacheable
 }
 
@@ -240,7 +256,7 @@ export function useMatch<
           (candidate) => candidate.routeId === routeId,
         )
         return match ? selector(match as any) : dummyMatch
-      }, selector),
+      }, selector, (result) => result !== dummyMatch),
     )
 
     if (matchSelection !== dummyMatch) {

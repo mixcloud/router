@@ -25,6 +25,7 @@ import {
   createRouter,
   useCanGoBack,
   useLocation,
+  useMatch,
   useMatchRoute,
   useNavigate,
   useRouterState,
@@ -732,6 +733,63 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
       router.stores.status.set('idle')
     })
     expect(screen.getByTestId('progress')).toHaveTextContent('idle|false')
+  })
+
+  /**
+   * An absent match is reported by a sentinel, which `useMatch` compares by
+   * identity — and the frame path commits a render by restoring the value it
+   * rendered into the selector's structural-sharing cache. That wrote the
+   * sentinel into a cache the inner selector owns, so when the route became
+   * active and its selection was deep-equal to the sentinel, `replaceEqualDeep`
+   * handed the sentinel itself back and the match kept reading as absent.
+   *
+   * The store path is the control: it never restores a rendered value into the
+   * cache, so the same probe works there, which makes this the frame path's
+   * defect rather than a property of an empty selection.
+   */
+  test('a match that becomes active is not reported absent', async () => {
+    function Probe() {
+      const selection = useMatch({
+        from: '/posts',
+        shouldThrow: false,
+        select: () => ({}),
+      })
+      return <div data-testid="probe">{selection ? 'present' : 'absent'}</div>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Probe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const postsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/posts',
+      component: () => <h1>Posts Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, postsRoute]),
+      // The cache only exists with structural sharing on.
+      defaultStructuralSharing: true,
+      experimental_concurrentRenderFrames,
+    })
+
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    expect(screen.getByTestId('probe')).toHaveTextContent('absent')
+
+    await router.navigate({ to: '/posts' })
+    await waitFor(() => screen.getByRole('heading', { name: 'Posts Title' }))
+    expect(screen.getByTestId('probe')).toHaveTextContent('present')
   })
 })
 
