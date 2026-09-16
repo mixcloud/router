@@ -2932,6 +2932,14 @@ describe('concurrent render frames', () => {
    * produce. The state it leaves behind is what matters and is exact — a
    * pending frame the head has left, and no publication in between for a
    * subscription to have noticed — so the boundary is driven directly.
+   *
+   * So this is a unit test of `commit`'s contract, not a reproduction: it
+   * asserts what the boundary does when handed that state, and claims
+   * nothing about a user reaching it. Nor could a test reach it through
+   * navigation and rendering alone, because three earlier guards refuse the
+   * same frame first — `publish` drops it, `owner.pending` refuses to hand
+   * it out for adoption, and `offeredFrame` refuses to seed a reader from
+   * it. This boundary is the backstop for a yield that gets past all three.
    */
   test('an acknowledgement for a frame the head has left is refused', async () => {
     let owner!: NonNullable<ReturnType<typeof useRouterStateOwner>>
