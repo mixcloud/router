@@ -736,6 +736,92 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
   })
 
   /**
+   * A render whose head moves inside its own commit runs its effects anyway,
+   * on both paths. Adoption refuses a staged frame the head has already left,
+   * and `commit` refuses it again, but neither can reach a render React has
+   * already begun: layout effects run child-first, so a route's own effects —
+   * a `<Navigate>` among them — run before any ancestor could intervene.
+   *
+   * The store path is the control, and it is what settles this: with no
+   * staged frame and no adoption at all, the same shape mounts the same route
+   * the head has left. So this is React's commit model rather than anything
+   * the option introduces, and the guards cover what is this option's to
+   * cover — publication and commitment. Pinned so the parity is visible, and
+   * so a future change that makes the frame path *worse* here fails.
+   */
+  test('a head moved inside the committing render runs the same effects', async () => {
+    const first = deferred()
+    const second = deferred()
+    const mounted: Array<string> = []
+
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const firstRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/first',
+      loader: () => first.promise,
+      component: function First() {
+        React.useEffect(() => {
+          mounted.push('/first')
+        }, [])
+        return <h1>First Title</h1>
+      },
+    })
+    const secondRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/second',
+      loader: () => second.promise,
+      component: () => <h1>Second Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, firstRoute, secondRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames,
+    })
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // A navigation in flight when the tree goes away: its load finishes with
+    // nothing to render it, so the owner holds it staged and the head names it.
+    const toFirst = router.navigate({ to: '/first' })
+    toFirst.catch(() => {})
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    cleanup()
+    first.resolve()
+    await act(async () => {
+      await first.promise
+    })
+
+    // The head moves inside the mounting commit, from a layout effect that
+    // runs before the route's own.
+    function Mover() {
+      React.useLayoutEffect(() => {
+        const toSecond = router.navigate({ to: '/second' })
+        toSecond.catch(() => {})
+      }, [])
+      return null
+    }
+
+    render(
+      <>
+        <Mover />
+        <RouterProvider router={router} />
+      </>,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(router.stores.location.get().pathname).toBe('/second')
+    expect(mounted).toEqual(['/first'])
+  })
+
+  /**
    * An absent match is reported by a sentinel, which `useMatch` compares by
    * identity — and the frame path commits a render by restoring the value it
    * rendered into the selector's structural-sharing cache. That wrote the
