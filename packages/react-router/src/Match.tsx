@@ -12,11 +12,7 @@ import { SafeFragment } from './SafeFragment'
 import { renderRouteNotFound } from './renderRouteNotFound'
 import { ScrollRestoration } from './scroll-restoration'
 import { ClientOnly } from './ClientOnly'
-import {
-  useFrameMode,
-  useFrameRootBoundary,
-  useRouterStateSelector,
-} from './routerStateContext'
+import { useFrameMode, useRouterStateSelector } from './routerStateContext'
 import {
   nonRouteComponentContext,
   wrapInNonRouteComponentContext,
@@ -146,11 +142,16 @@ function MatchView({
     : route.options.notFoundComponent
 
   const resolvedNoSsr = match.ssr === false || match.ssr === 'data-only'
-  const _isServer = isServer ?? router.isServer
   // Once hydrated, a concurrent frame must suspend and acknowledge as one
   // unit. During SSR and hydration, retain the route boundaries so the server
   // can stream its shell and the client hydrates the same boundary tree.
-  const frameRootBoundary = useFrameRootBoundary(router, _isServer)
+  //
+  // `useFrameMode` is read unconditionally, since it is a hook; the server
+  // expression stays directly in the branch condition so the whole thing
+  // folds away in a client bundle.
+  const frameMode = useFrameMode(router)
+  const frameRootBoundary =
+    frameMode && !(isServer ?? router.isServer) && !router.ssr
   // A root component may render the document itself. Only place its Suspense
   // boundary in pure CSR, inside an explicit shell, or when explicitly opted in.
   const ResolvedSuspenseBoundary =

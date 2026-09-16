@@ -2878,6 +2878,107 @@ describe('concurrent render frames', () => {
   })
 
   /**
+   * A reconstructed seed does not borrow the head's identity.
+   *
+   * The seed above is built by taking the head and swapping in the
+   * acknowledged location and matches. Keeping the head's `frameId` would put
+   * two different sets of route content under one public identity: the frame
+   * on screen and the one the navigation is preparing. `frameId` is what an
+   * acknowledgement is matched against and what `publish` compares to decide
+   * that content has not moved, and a consumer is entitled to key a cache on
+   * it, so the reconstruction takes an identity of its own.
+   *
+   * The control that makes this a regression rather than a naming quibble:
+   * the seed's content demonstrably differs from the head's — the assertions
+   * on `/` against a head sitting at `/slow` — so equal ids would be a claim
+   * the frame itself contradicts.
+   */
+  test('a reconstructed seed does not reuse the head frame id', async () => {
+    const gate = deferred()
+
+    function Probe() {
+      const frameId = useRouterState({ select: (s) => s.frameId })
+      const value = useRouterState({
+        select: (s) =>
+          `${s.location.pathname}|${s.matches.map((m) => m.routeId).join('+')}`,
+      })
+      return (
+        <>
+          <div data-testid="probe">{value}</div>
+          <div data-testid="frame-id">{String(frameId)}</div>
+        </>
+      )
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Probe />
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const slowRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/slow',
+      loader: () => gate.promise,
+      component: () => <h1>Slow Title</h1>,
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, slowRoute]),
+      defaultPendingMs: 0,
+      experimental_concurrentRenderFrames: false,
+    })
+
+    const first = render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+    first.unmount()
+
+    act(() => {
+      router.update({
+        ...router.options,
+        experimental_concurrentRenderFrames: true,
+      })
+    })
+
+    const navigation = router.navigate({ to: '/slow' })
+    navigation.catch(() => {})
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The seed holds route content the head does not.
+    expect(screen.getByTestId('probe')).toHaveTextContent('/|__root__+/')
+    expect(router.stores.location.get().pathname).toBe('/slow')
+
+    const seededId = Number(screen.getByTestId('frame-id').textContent)
+    expect(seededId).not.toBe(router.stores.__store.get().frameId)
+
+    gate.resolve()
+    await act(async () => {
+      await gate.promise
+    })
+    await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
+    // And the publication that follows carries core's identity, not the
+    // reconstruction's.
+    expect(Number(screen.getByTestId('frame-id').textContent)).toBe(
+      router.stores.__store.get().frameId,
+    )
+  })
+
+  /**
    * A cached owner is brought back in step before a tree reads it.
    *
    * Owners are cached for the router's lifetime, which outlasts any one tree,

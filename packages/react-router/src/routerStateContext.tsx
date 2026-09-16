@@ -321,10 +321,18 @@ export function RouterStateStorePath({
  * with `_committed`. Recording the matches at the acknowledgement removes the
  * guesswork rather than adding a fifth discriminator.
  *
- * The head's `frameId` is kept. Nothing acknowledges a seeded frame — it is
- * only ever replaced by the next `publish` or `stage` — and a navigation that
- * commits changes the matches, so the head's identity advances past it.
+ * A reconstruction gets an identity of its own. `frameId` identifies route
+ * content, and this frame's content is by construction *not* the head's, so
+ * carrying the head's id would put two different publications under one
+ * identity — which is what an acknowledgement is matched against, and what
+ * `publish` compares to decide that content has not moved. Core counts its
+ * ids up from zero, so counting down from below zero here cannot collide with
+ * a publication, and a consumer versioning a cache on `frameId` sees a
+ * snapshot distinct from both the publication being left and the one being
+ * prepared.
  */
+let reconstructedFrameId = 0
+
 function initialFrame(router: AnyRouter): RouterRenderFrame {
   const head = router.stores.__store.get()
   const resolved = router.stores.resolvedLocation.get()
@@ -339,7 +347,12 @@ function initialFrame(router: AnyRouter): RouterRenderFrame {
   ) {
     return head
   }
-  return { ...head, location: resolved, matches: resolvedMatches }
+  return {
+    ...head,
+    frameId: --reconstructedFrameId,
+    location: resolved,
+    matches: resolvedMatches,
+  }
 }
 
 function createOwner(router: AnyRouter): RouterStateOwner {
@@ -611,7 +624,13 @@ export function RouterStateProvider({
   // Keyed by router identity. A mounted provider can be handed a different
   // router — a test rerender, HMR, switching tenant — and an owner built for
   // the previous one would keep reading and staging that router's state.
-  const owner = ownerFor(router)
+  //
+  // Not on the server: an owner carries subscriber sets and a cached
+  // presentation, which is UI state a server render must not build. Readers
+  // there resolve to a detached scope over the store head instead, which is
+  // the same publication an owner would have been seeded with, so the render
+  // is identical and the client builds the owner at hydration.
+  const owner = (isServer ?? router.isServer) ? undefined : ownerFor(router)
   // The tree's decision: the option as it stands when this provider mounts,
   // kept for as long as it is mounted. Read from the router rather than from
   // the owner, because an owner is cached for its router's lifetime — a
@@ -622,6 +641,9 @@ export function RouterStateProvider({
   )
 
   useLayoutEffect(() => {
+    if (!owner) {
+      return
+    }
     const subscription = router.stores.__store.subscribe(() => owner.publish())
     owner.publish()
     return () => subscription.unsubscribe()
@@ -630,7 +652,7 @@ export function RouterStateProvider({
   return (
     <routerStateOwnerContext.Provider value={owner}>
       <RouterStateFrameMode router={router} frameMode={frameMode}>
-        <routerStateScopeContext.Provider value={owner.root}>
+        <routerStateScopeContext.Provider value={owner?.root}>
           {children}
         </routerStateScopeContext.Provider>
       </RouterStateFrameMode>
@@ -738,11 +760,20 @@ export function useFrameMode(router: AnyRouter): boolean {
   // component's first render, and kept, so a later swap cannot change this
   // reader's hook shape underneath it either.
   const tree = React.useContext(routerStateFrameModeContext)
-  const [mode] = React.useState(() =>
+  const decide = () =>
     tree?.router === router
       ? tree.frameMode
-      : Boolean(router.options.experimental_concurrentRenderFrames),
-  )
+      : Boolean(router.options.experimental_concurrentRenderFrames)
+  if (isServer ?? router.isServer) {
+    // One render, so there is nothing to freeze against a later swap, and no
+    // React state may be created here. The answer itself is unchanged: the
+    // client hydrates through the same branch the server rendered, and a
+    // server render that disagreed would be a hydration mismatch rather than
+    // an optimisation.
+    return decide()
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  const [mode] = React.useState(decide)
   return mode
 }
 
@@ -969,29 +1000,4 @@ export function useRouterStateSelector<TSelected>(
   }, [rebase, scope])
 
   return rendered
-}
-
-/**
- * Whether this render should consolidate route suspension at the frame root.
- *
- * Answered from the option and whether the app renders on the server, both
- * fixed for the tree's lifetime — deliberately, because this decides an
- * element *type*. It first followed hydration, which meant the wrapper at the
- * root of the route tree changed from a fragment to a `Suspense` boundary the
- * moment hydration finished: React reads a changed type as a replacement, so
- * the whole route subtree unmounted and remounted, re-running mount effects
- * and discarding anything a component had set up while hydrating.
- *
- * A server-rendered app therefore does not consolidate at all. It keeps
- * upstream's route-level boundaries, which is what its streamed HTML already
- * describes, and gives up atomic acknowledgement: a child that suspends
- * resolves at its own boundary, so a frame can be acknowledged while part of
- * the tree is still pending. That is upstream's behaviour today, and a far
- * better trade than remounting the route tree once per page load.
- */
-export function useFrameRootBoundary(
-  router: AnyRouter,
-  isServerRender: boolean,
-): boolean {
-  return useFrameMode(router) && !isServerRender && !router.ssr
 }
