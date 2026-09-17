@@ -365,8 +365,20 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
 
   // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   if (useFrameMode(router)) {
+    // Only the presented *location*. `matchRoute` needs no more from a frame:
+    // selecting the whole thing re-rendered every consumer, and handed back a
+    // new callback, whenever anything else in it moved — a background loader
+    // finishing under an unchanged location produces a new matches array, and
+    // so a new frame. Progress is deliberately not taken from the frame
+    // either: `status` is navigation progress rather than route content, and
+    // `matchRoute` falls back to the head for it, which is what the store path
+    // has always used and keeps this callback's identity as stable as that
+    // path's.
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    const state = useRouterStateSelector(router, (frameState) => frameState)
+    const presentedLocation = useRouterStateSelector(
+      router,
+      (frameState) => frameState.location,
+    )
     // eslint-disable-next-line react-hooks/rules-of-hooks
     return React.useCallback(
       (opts) => {
@@ -381,13 +393,13 @@ export function useMatchRoute<TRouter extends AnyRouter = RegisteredRouter>(): <
             caseSensitive,
             fuzzy,
             includeSearch,
-            _state: state,
+            _state: { location: presentedLocation },
           } as any,
         )
       },
       [
         router,
-        state,
+        presentedLocation,
         // An explicit `matchRoute({ pending: true })` resolves against the
         // head, so this hook has to re-render when the head moves — and a
         // second navigation starting while the first is still pending changes
