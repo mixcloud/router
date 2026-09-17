@@ -85,6 +85,14 @@ export interface RouterStores<in out TRouteTree extends AnyRoute> {
   ) => RouterReadableStore<AnyRouteMatch | undefined>
 
   setMatches: (nextMatches: Array<AnyRouteMatch>) => void
+
+  /**
+   * One identity from the counter `__store` assembles with, for a state a
+   * framework adapter builds itself rather than reading from here. Sharing the
+   * counter keeps `frameId` monotonic and collision-free across both kinds of
+   * assembly, which is the contract `RouterState` documents.
+   */
+  mintFrameId: () => number
 }
 
 export function createRouterStores<TRouteTree extends AnyRoute>(
@@ -92,6 +100,7 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
   config: StoreConfig,
 ): RouterStores<TRouteTree> {
   const { createMutableStore, createReadonlyStore, batch } = config
+  let nextFrameId = 0
 
   // non reactive utilities
   const byRoute = new Map<string, MatchStore>()
@@ -109,13 +118,37 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
   )
 
   // compatibility "big" state store
-  const __store = createReadonlyStore(() => ({
-    status: status.get(),
-    isLoading: status.get() === 'pending',
-    matches: matches.get(),
-    location: location.get(),
-    resolvedLocation: resolvedLocation.get(),
-  }))
+  //
+  // `frameId` advances when route content does, not on every read. The SSR
+  // store is non-reactive — its getter runs again for each reader — so
+  // counting reads gave two consumers in one server render different ids for
+  // the same content, and anything derived from one would differ between the
+  // server and the client, whose store caches the assembly. Progress is
+  // deliberately not part of the comparison: the id identifies route content,
+  // which is the contract `RouterState` documents.
+  let previous: RouterState<TRouteTree> | undefined
+  const __store = createReadonlyStore(() => {
+    const nextMatches = matches.get()
+    const nextLocation = location.get()
+    const nextResolvedLocation = resolvedLocation.get()
+    const unchanged =
+      previous !== undefined &&
+      previous.location === nextLocation &&
+      previous.resolvedLocation === nextResolvedLocation &&
+      arraysEqual(previous.matches, nextMatches)
+        ? previous
+        : undefined
+    const next: RouterState<TRouteTree> = {
+      frameId: unchanged ? unchanged.frameId : nextFrameId++,
+      status: status.get(),
+      isLoading: status.get() === 'pending',
+      matches: nextMatches,
+      location: nextLocation,
+      resolvedLocation: nextResolvedLocation,
+    }
+    previous = next
+    return next
+  })
 
   function getMatchStore(routeId: string): MatchStore {
     let matchStore = byRoute.get(routeId)
@@ -147,6 +180,18 @@ export function createRouterStores<TRouteTree extends AnyRoute>(
 
     // methods
     setMatches,
+    mintFrameId,
+  }
+
+  /**
+   * One identity from the counter the aggregate uses, for a state a framework
+   * adapter assembles itself rather than reading from here — a presentation
+   * reconstructed for a tree that mounts mid-navigation, say. Sharing the
+   * counter is what keeps `frameId` monotonic and collision-free across both
+   * kinds of assembly, which is the contract `RouterState` documents.
+   */
+  function mintFrameId() {
+    return nextFrameId++
   }
 
   // setters to update non-reactive utilities in sync with the reactive stores
