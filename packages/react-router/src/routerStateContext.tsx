@@ -489,6 +489,15 @@ function createOwner(router: AnyRouter): RouterStateOwner {
         sameLocation(nextLocation, root.committed.location) &&
         nextMatches === root.committed.matches
       ) {
+        // Route content has not moved, but progress is not route content: the
+        // head can be `pending` for a navigation that has staged nothing yet,
+        // and returning without the overlay leaves both scopes on the progress
+        // of whenever this owner was last driven. The mounting tree's own
+        // effects read the scope before the provider's `publish` runs, being
+        // deeper. Assigned rather than notified, because this runs during
+        // render — the same reason the rest of `resync` notifies nobody.
+        root.committed = withProgress(root.committed, head)
+        route.committed = withProgress(route.committed, head)
         return
       }
       const next = content
