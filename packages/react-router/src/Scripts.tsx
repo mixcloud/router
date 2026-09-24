@@ -3,6 +3,10 @@ import { _getAssetMatches, deepEqual } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { Asset } from './Asset'
 import { useRouter } from './useRouter'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type { RouterManagedTag } from '@tanstack/router-core'
 
 type ScriptRenderAsset = RouterManagedTag & {
@@ -62,16 +66,32 @@ export const Scripts = () => {
     return scripts
   }
 
+  // The server renders once and has no staged successor, so it reads the
+  // store head directly, as upstream does.
   if (isServer ?? router.isServer) {
     const activeMatches = router.stores.matches.get()
     const scripts = getScripts(activeMatches)
     return renderScripts(router, scripts)
   }
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
-  const scripts = useSelector(router.stores.matches, getScripts, {
-    compare: deepEqual,
-  })
+  // On the client the scripts belong to the publication this tree is
+  // presenting, so that a staged navigation does not pull in the
+  // destination's scripts while the previous route is still on screen.
+  let scripts: ReturnType<typeof getScripts>
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    scripts = useRouterStateSelector(
+      router,
+      (state) => getScripts(state.matches),
+      deepEqual,
+    )
+  } else {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
+    scripts = useSelector(router.stores.matches, getScripts, {
+      compare: deepEqual,
+    })
+  }
 
   return renderScripts(router, scripts)
 }

@@ -12,8 +12,13 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 
 import { useHydrated } from './ClientOnly'
+import type { RouterRenderFrame } from './routerStateContext'
 import type {
   ActiveOptions,
   AnyRouter,
@@ -272,7 +277,7 @@ function useLinkPropsFor<
     ],
   )
 
-  // Derive inside the selector so `compareLinkState` can bail out. Deriving after
+  // Derive inside the selector so the comparator can bail out. Deriving after
   // the subscription instead re-renders every link on every navigation, because
   // the comparator only sees the location, not whether this link's output moved.
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -312,12 +317,30 @@ function useLinkPropsFor<
     [stableActiveOptions, disabled, isHydrated, _options, dest, router, to],
   )
 
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  const frameMode = useFrameMode(router)
+  // The publication this link is presenting, read at click time rather than
+  // captured in render. Navigation and preloading have to resolve against the
+  // location the href was built from — with concurrent render frames a link
+  // rendered against the visible route would otherwise navigate relative to
+  // the route being prepared — but a link whose href did not change does not
+  // re-render, so a value captured here would be from whichever navigation
+  // last moved it. `undefined` outside the frame path, where the router's own
+  // head is the right source and already fresh.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [href, isActive] = useSelector(
-    router.stores.location,
-    selectLinkState,
-    LINK_SELECTOR_OPTIONS,
+  const presentedFrame = React.useRef<(() => RouterRenderFrame) | undefined>(
+    undefined,
   )
+  const [href, isActive] = frameMode
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+      useRouterStateSelector(
+        router,
+        (state) => selectLinkState(state.location),
+        LINK_SELECTOR_OPTIONS.compare,
+        presentedFrame,
+      )
+    : // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+      useSelector(router.stores.location, selectLinkState, LINK_SELECTOR_OPTIONS)
   const externalLink = isActive === undefined ? href : undefined
   const linkDisabled = disabled || href === undefined
 
@@ -332,7 +355,20 @@ function useLinkPropsFor<
     userPreloadDelay ?? router.options.defaultPreloadDelay ?? 0
 
   // `preloadRoute` builds the location itself and only reads the options, so
-  // `_options` goes through as-is.
+  // `_options` goes through as-is, except for the location it resolves
+  // against: on the frame path that is the publication this link is
+  // presenting, read at call time, so a link preloads the destination it is
+  // displaying rather than one relative to the route being prepared. An
+  // explicit `_fromLocation` in the options still wins, and outside the frame
+  // path `presentedFrame` is empty and the router's own head is used.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const preloadOptions = React.useCallback(
+    () => ({
+      _fromLocation: presentedFrame.current?.().location,
+      ..._options,
+    }),
+    [_options],
+  )
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const enqueuePreload = React.useCallback(
     (e?: React.MouseEvent | React.FocusEvent | IntersectionObserverEntry) => {
@@ -346,7 +382,7 @@ function useLinkPropsFor<
       }
 
       if (!preloadDelay) {
-        preloadLink(router, _options)
+        preloadLink(router, preloadOptions())
         return
       }
 
@@ -358,11 +394,11 @@ function useLinkPropsFor<
         innerRef,
         setTimeout(() => {
           timeoutMap.delete(innerRef)
-          preloadLink(router, _options)
+          preloadLink(router, preloadOptions())
         }, preloadDelay),
       )
     },
-    [router, _options, innerRef, preload, preloadDelay],
+    [router, preloadOptions, innerRef, preload, preloadDelay],
   )
 
   // Preload side effects: `render` preloads once per link, `viewport` watches
@@ -371,7 +407,7 @@ function useLinkPropsFor<
   React.useEffect(() => {
     if (preload === 'render' && !hasRenderFetched.current) {
       hasRenderFetched.current = true
-      preloadLink(router, _options)
+      preloadLink(router, preloadOptions())
     }
     let observer: IntersectionObserver | undefined
     if (
@@ -389,7 +425,7 @@ function useLinkPropsFor<
       observer?.disconnect()
       cancelPreload(innerRef)
     }
-  }, [router, _options, preload, enqueuePreload, innerRef])
+  }, [router, preloadOptions, preload, enqueuePreload, innerRef])
 
   const props = collectElementProps(options, host)
   props.ref = forwardedRef ? mergedRef : innerRef
@@ -420,6 +456,9 @@ function useLinkPropsFor<
       // All is well? Navigate!
       // N.B. we don't call `router.commitLocation(next) here because we want to run `validateSearch` before committing
       router.navigate({
+        // Resolve against the location this link's href was built from, so the
+        // click goes where the href says it does.
+        _fromLocation: presentedFrame.current?.().location,
         ..._options,
         replace,
         resetScroll,
@@ -433,7 +472,7 @@ function useLinkPropsFor<
 
   const handleTouchStart = () => {
     if (preload === 'intent') {
-      preloadLink(router, _options)
+      preloadLink(router, preloadOptions())
     }
   }
 

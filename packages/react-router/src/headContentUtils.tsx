@@ -11,6 +11,10 @@ import {
 } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   AnyRouteMatch,
   AssetCrossOriginConfig,
@@ -196,6 +200,9 @@ export const useTags = (assetCrossOrigin?: AssetCrossOriginConfig) => {
   const router = useRouter()
   const nonce = router.options.ssr?.nonce
 
+  // The server renders once and subscribes to nothing, so there is nothing for
+  // a memoized selector to hold steady — and creating one is reactivity the
+  // server render must not build. Branch before it, as upstream does.
   if (isServer ?? router.isServer) {
     return buildTagsFromMatches(
       router,
@@ -205,12 +212,22 @@ export const useTags = (assetCrossOrigin?: AssetCrossOriginConfig) => {
     )
   }
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   const selectTags = React.useCallback(
     (matches: Array<AnyRouteMatch>) =>
       buildTagsFromMatches(router, nonce, matches, assetCrossOrigin),
     [assetCrossOrigin, nonce, router],
   )
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- condition is static
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    return useRouterStateSelector(
+      router,
+      (state) => selectTags(state.matches),
+      deepEqual,
+    )
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
   return useSelector(router.stores.matches, selectTags, { compare: deepEqual })
 }

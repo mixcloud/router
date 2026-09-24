@@ -917,6 +917,7 @@ export async function loadServerRoute(
       nextEnd = router._lifecycleEnd = lifecycleEnd(result.matches)
       router.stores.setMatches(result.matches)
       router.stores.resolvedLocation.set(next)
+      router._resolvedMatches = router._committed
     }
   })
   if (result.type === 'render') {
