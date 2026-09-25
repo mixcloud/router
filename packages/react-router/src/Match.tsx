@@ -12,6 +12,7 @@ import { SafeFragment } from './SafeFragment'
 import { renderRouteNotFound } from './renderRouteNotFound'
 import { ScrollRestoration } from './scroll-restoration'
 import { ClientOnly } from './ClientOnly'
+import { useFrameMode, useRouterStateSelector } from './routerStateContext'
 import {
   nonRouteComponentContext,
   wrapInNonRouteComponentContext,
@@ -43,10 +44,36 @@ type OutletMatchSelection = [
   parentNotFoundError: unknown,
 ]
 
+type ConcurrentOutletMatchSelection = [
+  parentGlobalNotFound: boolean,
+  parentNotFoundError: unknown,
+  childRouteId: string | undefined,
+]
+
 const outletMatchSelectionEqual = (
   a: OutletMatchSelection,
   b: OutletMatchSelection,
 ) => a[0] === b[0] && a[1] === b[1]
+
+const concurrentOutletMatchSelectionEqual = (
+  a: ConcurrentOutletMatchSelection,
+  b: ConcurrentOutletMatchSelection,
+) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
+
+/**
+ * What an `Outlet` selects from a frame that no longer matches its route.
+ *
+ * A frame is offered to every subscribed consumer, including ones React is
+ * about to unmount because the new frame's match tree has a different shape.
+ * Those consumers still run their selector against the new frame, so it has to
+ * describe a route that has left the tree rather than assume its own match is
+ * still there. Rendering no child is correct for a subtree that is going away.
+ */
+const absentOutletMatchSelection: ConcurrentOutletMatchSelection = [
+  false,
+  undefined,
+  undefined,
+]
 
 const canWrapInSuspense = (
   router: ReturnType<typeof useRouter>,
@@ -66,9 +93,26 @@ export const Match = React.memo(function MatchImpl({
   routeId: string
 }) {
   const router = useRouter()
-
+  // The server first, so the frame branch below is not reached there: it would
+  // resolve to the head, which is what this reads directly.
   if (isServer ?? router.isServer) {
     const match = router.stores.byRoute.get(routeId)!.get()!
+    return <MatchView router={router} match={match} />
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const match = useRouterStateSelector(router, (state) =>
+      state.matches.find((candidate) => candidate.routeId === routeId),
+    )
+    // Same reasoning as `absentOutletMatchSelection`: a frame that drops this
+    // route can reach a consumer React has not unmounted yet. Rendering no
+    // match is correct for a subtree that is going away, and is safer than
+    // asserting a match the frame does not describe.
+    if (!match) {
+      return null
+    }
     return <MatchView router={router} match={match} />
   }
 
@@ -277,7 +321,30 @@ export const Outlet = React.memo(function OutletImpl() {
   let parentNotFoundError: unknown
   let childRouteId: string | undefined
 
-  if (isServer ?? router.isServer) {
+  const frameMode = useFrameMode(router)
+  if (frameMode) {
+    ;[parentGlobalNotFound, parentNotFoundError, childRouteId] =
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useRouterStateSelector(
+        router,
+        (state): ConcurrentOutletMatchSelection => {
+          const matches = state.matches
+          const parentIndex = matches.findIndex(
+            (match) => match.routeId === routeId,
+          )
+          const parentMatch = matches[parentIndex]
+          if (!parentMatch) {
+            return absentOutletMatchSelection
+          }
+          return [
+            !!parentMatch._notFound,
+            parentMatch.error,
+            matches[parentIndex + 1]?.routeId,
+          ]
+        },
+        concurrentOutletMatchSelectionEqual,
+      )
+  } else if (isServer ?? router.isServer) {
     const matches = router.stores.matches.get()
     const parentIndex = matches.findIndex((match) => match.routeId === routeId)
     const parentMatch = matches[parentIndex]!

@@ -3,7 +3,11 @@
 import { useSelector } from '@tanstack/react-store'
 import { isServer } from '@tanstack/router-core/isServer'
 import { useRouter } from './useRouter'
-import { useStructuralSharing } from './useMatch'
+import { useStructuralSharing, withSelectorCache } from './useMatch'
+import {
+  useFrameMode,
+  useRouterStateSelector,
+} from './routerStateContext'
 import type {
   StructuralSharingOption,
   ValidateSelected,
@@ -52,10 +56,27 @@ export function useLocation<
 ): UseLocationResult<TRouter, TSelected> {
   const router = useRouter<TRouter>()
 
+  // The server first, so that neither branch below is reached there: one
+  // render, no subscription, and no presented publication to resolve — the
+  // head is what a frame path would offer anyway.
   if (isServer ?? router.isServer) {
     const location = router.stores.location.get()
     return (
       opts?.select ? opts.select(location as any) : location
+    ) as UseLocationResult<TRouter, TSelected>
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- server return above, condition is static
+  if (useFrameMode(router)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    const selectLocation = useStructuralSharing(opts, router)
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- frozen at mount
+    return useRouterStateSelector(
+      router,
+      withSelectorCache(
+        (state: RouterState<any>) => selectLocation(state.location),
+        selectLocation,
+      ),
     ) as UseLocationResult<TRouter, TSelected>
   }
 

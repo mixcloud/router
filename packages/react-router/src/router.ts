@@ -17,6 +17,14 @@ import type {
 declare module '@tanstack/router-core' {
   export interface RouterOptionsExtensions {
     /**
+     * Publish one immutable router snapshot through React state per navigation.
+     * This keeps urgent renders on the committed route while a newer route is
+     * pending, at the cost of broad context invalidation.
+     *
+     * @experimental
+     */
+    experimental_concurrentRenderFrames?: boolean
+    /**
      * The default `component` a route should use if no component is provided.
      *
      * @default Outlet
