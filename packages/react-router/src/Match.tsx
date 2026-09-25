@@ -145,20 +145,9 @@ function MatchView({
     : route.options.notFoundComponent
 
   const resolvedNoSsr = match.ssr === false || match.ssr === 'data-only'
-  // Once hydrated, a concurrent frame must suspend and acknowledge as one
-  // unit. During SSR and hydration, retain the route boundaries so the server
-  // can stream its shell and the client hydrates the same boundary tree.
-  //
-  // `useFrameMode` is read unconditionally, since it is a hook; the server
-  // expression stays directly in the branch condition so the whole thing
-  // folds away in a client bundle.
-  const frameMode = useFrameMode(router)
-  const frameRootBoundary =
-    frameMode && !(isServer ?? router.isServer) && !router.ssr
   // A root component may render the document itself. Only place its Suspense
   // boundary in pure CSR, inside an explicit shell, or when explicitly opted in.
   const ResolvedSuspenseBoundary =
-    !frameRootBoundary &&
     canWrapInSuspense(router, route, match.ssr) &&
     (route.options.wrapInSuspense ??
       pendingElement ??
@@ -392,8 +381,7 @@ export const Outlet = React.memo(function OutletImpl() {
 
   const nextMatch = <Match routeId={childRouteId} />
 
-  // Matches owns the experiment's single acknowledgement boundary.
-  if (routeId === rootRouteId && !frameMode) {
+  if (routeId === rootRouteId) {
     return (
       <React.Suspense fallback={renderPending(router)}>
         {nextMatch}
