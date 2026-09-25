@@ -256,23 +256,22 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
   })
 
   /**
-   * What each path shows while the next route loads.
+   * A route's own `pendingComponent` shows on both paths, on a first render
+   * and on a navigation.
    *
-   * On the frame path suspension consolidates at one boundary around the route
-   * tree. That boundary mounts with the tree, so the first render shows its
-   * fallback — built from the root route, which is why a route's own
-   * `pendingComponent` is not the one that appears. By the time a navigation
-   * happens the boundary is already mounted, and the navigation is a
-   * transition: React keeps the route on screen rather than replacing it with
-   * a fallback. So no pending UI appears on a navigation at all, and
-   * `pendingMs` / `pendingMinMs` have nothing to time.
+   * An earlier revision consolidated suspension at one boundary around the
+   * whole route tree, so a route's own pending UI never rendered: the first
+   * render showed the root route's fallback, and a navigation — being a
+   * transition — showed the route being left for as long as the next one
+   * loaded. Applications lost both their skeletons and any per-section
+   * streaming, since a nested boundary could no longer resolve on its own.
    *
-   * That is the behaviour the option exists to produce, not a defect, but it
-   * is a behaviour change large enough to pin against the store path rather
-   * than leave to be rediscovered. Progress UI is expected to read `status`
-   * and `isLoading`, which stay live on both paths.
+   * Keeping the per-route boundaries costs nothing the acknowledgement needs.
+   * A tree that renders the new matches has presented that frame, whether or
+   * not a boundary inside it still shows a fallback, so a reader outside the
+   * route tree that advances with it still agrees with the screen.
    */
-  test('what stands in for the loading route differs by path', async () => {
+  test('a route pending component shows on both paths', async () => {
     const gate = deferred()
 
     const makePendingRouter = (initialPath: string) => {
@@ -305,36 +304,25 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
       })
     }
 
-    // First render: the boundary mounts with the tree, so a fallback shows on
-    // both paths — the root route's on the frame path, the route's own on the
-    // store path.
+    // GIVEN a first render straight onto the slow route
     render(<RouterProvider router={makePendingRouter('/slow')} />)
-    await waitFor(() =>
-      screen.getByRole('heading', {
-        name: experimental_concurrentRenderFrames
-          ? 'Root Pending'
-          : 'Route Pending',
-      }),
-    )
+
+    // THEN the route's own pending component stands in for it
+    await waitFor(() => screen.getByRole('heading', { name: 'Route Pending' }))
     cleanup()
 
-    // A navigation, with the boundary already mounted.
+    // GIVEN a mounted tree on another route
     const router = makePendingRouter('/')
     render(<RouterProvider router={router} />)
     await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // WHEN it navigates to the slow route
     fireEvent.click(screen.getByRole('link', { name: 'Slow' }))
     await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
 
-    if (experimental_concurrentRenderFrames) {
-      // The route being left stays on screen instead of any fallback.
-      expect(screen.queryByRole('heading', { name: 'Route Pending' })).toBeNull()
-      expect(screen.queryByRole('heading', { name: 'Root Pending' })).toBeNull()
-      expect(
-        screen.getByRole('heading', { name: 'Index Title' }),
-      ).toBeInTheDocument()
-    } else {
-      await waitFor(() => screen.getByRole('heading', { name: 'Route Pending' }))
-    }
+    // THEN the same pending component stands in, rather than the route being left
+    await waitFor(() => screen.getByRole('heading', { name: 'Route Pending' }))
+    expect(screen.queryByRole('heading', { name: 'Index Title' })).toBeNull()
 
     gate.resolve()
     await waitFor(() => screen.getByRole('heading', { name: 'Slow Title' }))
