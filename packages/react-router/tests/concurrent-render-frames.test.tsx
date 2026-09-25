@@ -329,6 +329,79 @@ describe.each(MODES)('%s', (_name, experimental_concurrentRenderFrames) => {
   })
 
   /**
+   * A section of a route reveals itself when its own data arrives, rather than
+   * the route waiting for every section.
+   *
+   * This is what a nested boundary is for, and React does not make a transition
+   * wait for one: a transition waits only long enough to avoid hiding content
+   * that is already revealed. Consolidating suspension at a single boundary
+   * removed that, so a route arrived in one commit however little of it was
+   * slow.
+   */
+  test('a slow section reveals on its own, not with the route', async () => {
+    const sectionGate = deferred()
+    let sectionReady = false
+
+    function SlowSection() {
+      if (!sectionReady) {
+        throw sectionGate.promise
+      }
+      return <p>Section content</p>
+    }
+
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Link to="/article">Article</Link>
+          <Outlet />
+        </>
+      ),
+    })
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => <h1>Index Title</h1>,
+    })
+    const articleRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/article',
+      component: () => (
+        <>
+          <h1>Article Title</h1>
+          <React.Suspense fallback={<p>Section Pending</p>}>
+            <SlowSection />
+          </React.Suspense>
+        </>
+      ),
+    })
+
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, articleRoute]),
+      experimental_concurrentRenderFrames,
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+
+    // GIVEN a mounted tree on another route
+    render(<RouterProvider router={router} />)
+    await waitFor(() => screen.getByRole('heading', { name: 'Index Title' }))
+
+    // WHEN it navigates to a route whose section is still loading
+    fireEvent.click(screen.getByRole('link', { name: 'Article' }))
+
+    // THEN the route arrives without waiting for that section
+    await waitFor(() => screen.getByRole('heading', { name: 'Article Title' }))
+    expect(screen.getByText('Section Pending')).toBeInTheDocument()
+
+    // AND the section fills in when its own data arrives
+    await act(async () => {
+      sectionReady = true
+      sectionGate.resolve()
+      await sectionGate.promise
+    })
+    await waitFor(() => screen.getByText('Section content'))
+  })
+
+  /**
    * A provider can unmount while a navigation is loading and mount again on
    * the same router. The frame path caches an owner per router, so the second
    * tree inherits the first one's in-flight frame — which the first tree was
